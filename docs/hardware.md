@@ -40,6 +40,9 @@ The last 1,024 bytes of `apps_compressed.bin` contain a Samsung flash footer
 with SEED markers and the version `S723E+XX+KG1`. `trace-apps` verifies the
 ZIP member, decrypts its payload and maps it at
 `0x81000000`. Its reset literal at offset `0x470` targets `0x81000674`.
+The decrypted XXKG1 payload has QMD `0x0503` tables at offsets `0x40000`
+and `0x80000`. The loader expands their raw, compressed-block and paged
+entries before mapping the image. The table describes a 94 MiB result.
 APPS programs `0x08700015` and `0xffff0015` into the TCM region registers,
 corresponding to 16 KiB DTCM and 16 KiB ITCM at those bases. The APPS probe
 uses those sizes.
@@ -66,6 +69,9 @@ Booting bada requires further board emulation.
   [ARM TCM setup](https://github.com/torvalds/linux/blob/master/arch/arm/kernel/tcm.c)
 - The TriX bada plugin describes the Samsung footer and format.
   [TriX format definitions](https://github.com/g3gg0/TriX/blob/f35f8bfa90641e17ab4b33ba644482d303faa5cd/plugins/TriX_fmtBADA/fmtBADA.h)
+- A `gh search code qmd_get_header` result supplied the QMD table layout,
+  control stream and code dictionary.
+  [libSFormat QMD reference](https://github.com/Crawlerop/libSFormat/blob/16b0b885689fa6af4d27036beab149c2e0c13659/libSFormat/qmd.h)
 
 The [Hardware code search](https://github.com/j92580498-max/Bada-os-emulator-/actions/workflows/research.yml)
 workflow repeats the searches on demand. GitHub code search requires an

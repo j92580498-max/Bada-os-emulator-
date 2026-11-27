@@ -1,6 +1,7 @@
 #include "wave723/firmware.hpp"
 
 #include "machine.hpp"
+#include "qmd.hpp"
 #include "seed.hpp"
 
 #include <miniz.h>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace wave723 {
@@ -141,7 +143,7 @@ public:
         }
         decryptSamsungSeed(bytes.data(), payloadSize / 16, keys);
         bytes.resize(payloadSize);
-        return bytes;
+        return expandAppsQmd(std::move(bytes));
     }
 
 private:

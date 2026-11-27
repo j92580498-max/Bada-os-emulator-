@@ -19,7 +19,7 @@ FetchContent_Declare(miniz
     URL https://codeload.github.com/richgel999/miniz/tar.gz/293d4db1b7d0ffee9756d035b9ac6f7431ef8492)
 FetchContent_MakeAvailable(miniz)
 
-add_library(wave723_core STATIC src/firmware.cpp src/machine.cpp src/seed.cpp)
+add_library(wave723_core STATIC src/firmware.cpp src/machine.cpp src/seed.cpp src/qmd.cpp)
 target_include_directories(wave723_core PUBLIC include)
 target_link_libraries(wave723_core PRIVATE miniz)
 if(MSVC)
@@ -64,6 +64,10 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(wave723-qmd-test tests/qmd_test.cpp)
+    target_include_directories(wave723-qmd-test PRIVATE src)
+    target_link_libraries(wave723-qmd-test PRIVATE wave723_core)
+    add_test(NAME qmd-expansion COMMAND wave723-qmd-test)
     add_test(NAME firmware-and-reset
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/smoke.py"
                 "$<TARGET_FILE:wave723>")
@@ -75,6 +79,7 @@ endif()
 
 install(FILES README.md LICENSE DESTINATION .)
 install(FILES "${miniz_SOURCE_DIR}/LICENSE" DESTINATION licenses RENAME miniz-LICENSE)
+install(FILES licenses/libSFormat-MIT.txt DESTINATION licenses)
 if(WAVE723_DESKTOP)
     install(FILES "${sdl3_SOURCE_DIR}/LICENSE.txt" DESTINATION licenses RENAME SDL-LICENSE.txt)
 endif()

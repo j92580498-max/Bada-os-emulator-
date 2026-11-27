@@ -200,7 +200,7 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
                 << std::hex << base
                 << " -> 0x" << handler << std::dec << "\nInstruction limit: "
                 << instructionLimit << '\n';
-    if (apps) description << "Decrypted APPS bytes staged: " << image.size() << '\n';
+    if (apps) description << "APPS bytes staged: " << image.size() << '\n';
     description << report;
     return description.str();
 }
