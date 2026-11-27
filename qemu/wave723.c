@@ -23,6 +23,7 @@
 #define RAM_SIZE (32 * MiB)
 #define APPS_MAX_RAM (144 * MiB)
 #define SYSCFG_RAMCTRL 0x08880048
+#define CLKPWR_ARMAHB_MODE 0x08140000
 #define AMSS_STACK_SRAM_BASE 0x08708000
 #define APPS_HIGH_SRAM_TAIL 0xffff4000
 #define APPS_STARTUP_DATA 0x8bd00000
@@ -48,6 +49,8 @@ struct Wave723State {
     ARMCPU *cpu;
     MemoryRegion unmapped;
     MemoryRegion ramctrl;
+    MemoryRegion armahb_mode;
+    uint32_t clock_mode;
     MemoryRegion diagnostic_stack;
     MemoryRegion diagnostic_high_sram;
     MemoryRegion diagnostic_startup_data;
@@ -211,6 +214,27 @@ static const MemoryRegionOps wave723_ramctrl_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+static uint64_t wave723_clock_mode_read(void *opaque, hwaddr address, unsigned size)
+{
+    Wave723State *s = opaque;
+    return s->clock_mode;
+}
+
+static void wave723_clock_mode_write(void *opaque, hwaddr address, uint64_t value,
+                                     unsigned size)
+{
+    Wave723State *s = opaque;
+    s->clock_mode = value;
+}
+
+static const MemoryRegionOps wave723_clock_mode_ops = {
+    .read = wave723_clock_mode_read,
+    .write = wave723_clock_mode_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
 static const MemoryRegionOps wave723_unmapped_ops = {
     .read = wave723_read,
     .write = wave723_write,
@@ -233,6 +257,7 @@ static void wave723_reset(void *opaque)
     }
     s->reported = false;
     s->reported_ramctrl = false;
+    s->clock_mode = 0;
     s->survey_count = 0;
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
@@ -289,6 +314,9 @@ static void wave723_init(MachineState *machine)
     memory_region_init_io(&s->ramctrl, OBJECT(machine), &wave723_ramctrl_ops,
                           s, "wave723.syscfg-ramctrl", 4);
     memory_region_add_subregion(memory, SYSCFG_RAMCTRL, &s->ramctrl);
+    memory_region_init_io(&s->armahb_mode, OBJECT(machine), &wave723_clock_mode_ops,
+                          s, "wave723.clkpwr-armahb-mode", 4);
+    memory_region_add_subregion(memory, CLKPWR_ARMAHB_MODE, &s->armahb_mode);
     wave723_lcd_init(&s->lcd, OBJECT(machine), memory);
     if (s->diagnostic && s->reset_vector == AMSS_BASE) {
         /* The AMSS startup places its initial stack in this SRAM window. */
