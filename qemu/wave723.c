@@ -25,6 +25,7 @@
 #define SYSCFG_RAMCTRL 0x08880048
 #define AMSS_STACK_SRAM_BASE 0x08708000
 #define APPS_HIGH_SRAM_TAIL 0xffff4000
+#define APPS_STARTUP_DATA 0x8bd00000
 #define TYPE_WAVE723_MACHINE MACHINE_TYPE_NAME("wave723")
 
 typedef struct Wave723Tcm {
@@ -49,6 +50,7 @@ struct Wave723State {
     MemoryRegion ramctrl;
     MemoryRegion diagnostic_stack;
     MemoryRegion diagnostic_high_sram;
+    MemoryRegion diagnostic_startup_data;
     Wave723Lcd lcd;
     Wave723Tcm tcm[2];
     QEMUTimer *deadline;
@@ -303,6 +305,15 @@ static void wave723_init(MachineState *machine)
                                                &error_fatal);
         memory_region_add_subregion(memory, APPS_HIGH_SRAM_TAIL, &s->diagnostic_high_sram);
         printf("Diagnostic: APPS high SRAM mapped at 0xffff4000 (4 KiB)\n");
+        /* The startup routine at 0x81355dfc builds two records here. */
+        if (RAM_BASE + machine->ram_size <= APPS_STARTUP_DATA) {
+            memory_region_init_ram_flags_nomigrate(&s->diagnostic_startup_data,
+                                                   OBJECT(machine),
+                                                   "wave723.apps-startup-data", 4 * KiB,
+                                                   0, &error_fatal);
+            memory_region_add_subregion(memory, APPS_STARTUP_DATA,
+                                        &s->diagnostic_startup_data);
+        }
     }
     for (unsigned i = 0; i < ARRAY_SIZE(s->tcm); ++i) {
         Wave723Tcm *tcm = &s->tcm[i];
