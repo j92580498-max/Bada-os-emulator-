@@ -44,7 +44,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libglib2.0-dev libpixman-1-dev libfdt-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libegl-dev libgl-dev libdbus-1-dev
+          sudo apt-get install -y ccache ninja-build libglib2.0-dev libpixman-1-dev libfdt-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libegl-dev libgl-dev libdbus-1-dev
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$RUNNER_TEMP/wave723-ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=400M" >> "$GITHUB_ENV"
+      - name: Reuse compiled Linux objects
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wave723-ccache
+          key: wave723-cc-v1-${{ runner.arch }}-${{ env.QEMU_REVISION }}-${{ github.sha }}
+          restore-keys: wave723-cc-v1-${{ runner.arch }}-${{ env.QEMU_REVISION }}-
       - name: Build Linux QEMU
         if: runner.os == 'Linux'
         run: |

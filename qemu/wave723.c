@@ -100,7 +100,7 @@ struct Wave723State {
     Wave723Intc intc;
     Wave723Dsp dsp;
     QEMUTimer *deadline;
-    int64_t deadline_at;
+    int64_t remaining_at_reset;
     int64_t limit;
     uint32_t reset_vector;
     bool diagnostic;
@@ -440,6 +440,10 @@ static void soft_reset_write(void *opaque, hwaddr offset, uint64_t value, unsign
 {
     Wave723State *s = opaque;
     if (value & 8) {
+        /* icount can warp idle time while QEMU stops both CPUs for reset. */
+        int64_t deadline = timer_expire_time_ns(s->deadline);
+        s->remaining_at_reset = MAX(INT64_C(1), deadline - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+        timer_del(s->deadline);
         ++s->soft_resets;
         if (s->diagnostic && s->soft_resets <= 4) {
             printf("Guest soft reset %u, PUMR 0x%02x, APPS PC 0x%08x\n",
@@ -507,10 +511,9 @@ static void wave723_reset(void *opaque)
     }
     wave723_gpt_reset(&s->gpt);
     cpu_set_pc(CPU(s->primary.cpu), s->reset_vector);
-    if (!s->deadline_at) {
-        s->deadline_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit;
-    }
-    timer_mod(s->deadline, s->deadline_at);
+    timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              (s->remaining_at_reset ? s->remaining_at_reset : s->limit));
+    s->remaining_at_reset = 0;
 }
 
 static void wave723_init_core(Wave723Core *core, MachineState *machine,
