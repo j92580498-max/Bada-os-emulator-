@@ -1,0 +1,76 @@
+name: Stock firmware boot
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: Successful Build and test run on main
+        required: true
+      media_asset:
+        description: Release asset ID of the maintainer's encrypted XXKG1 test inputs
+        required: true
+      instructions:
+        description: Guest instruction budget
+        default: '700000000'
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  boot:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Get the tested emulator
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.build_run }}
+        run: |
+          [[ $BUILD_RUN =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" |
+            jq -e --arg repo "$GITHUB_REPOSITORY" '
+              .head_repository.full_name == $repo and .head_branch == "main" and
+              .path == ".github/workflows/build.yml" and .conclusion == "success" and
+              (.event == "push" or .event == "workflow_dispatch")'
+          gh run download "$BUILD_RUN" -R "$GITHUB_REPOSITORY" -n wave723-linux-arm64
+          tar -xzf wave723-linux-arm64.tar.gz
+      - name: Install screenshot tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xvfb xauth xterm xdotool imagemagick fonts-dejavu-core
+      - name: Stage the private test input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MEDIA_ASSET: ${{ inputs.media_asset }}
+          MEDIA_KEY: ${{ secrets.WAVE723_MEDIA_KEY }}
+        run: |
+          set -o pipefail
+          [[ $MEDIA_ASSET =~ ^[0-9]+$ && -n $MEDIA_KEY ]]
+          umask 077
+          mkdir "$RUNNER_TEMP/stock"
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$MEDIA_ASSET" > "$RUNNER_TEMP/input.gpg"
+          gpg --batch --pinentry-mode loopback --passphrase-fd 3 3<<<"$MEDIA_KEY" \
+            --decrypt "$RUNNER_TEMP/input.gpg" |
+            tar -x -C "$RUNNER_TEMP/stock" --no-same-owner --no-same-permissions \
+              S7230EXXKG1_OXGKG2.zip S7230EXXKG1_OXGKG2/BOOTFILES/sysparm_{ind,dep}.img
+      - name: Boot XXKG1 and capture the LCD
+        env:
+          BUDGET: ${{ inputs.instructions }}
+        run: |
+          [[ $BUDGET =~ ^[1-9][0-9]{0,9}$ ]]
+          xvfb-run -a -s '-screen 0 1600x1000x24' bash scripts/capture-stock.sh \
+            ./wave723/wave723 "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" "$BUDGET"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && hashFiles('stock-images/*.png') != '' }}
+        with:
+          name: stock-images
+          path: stock-images/*.png
+          if-no-files-found: error
+          retention-days: 3
