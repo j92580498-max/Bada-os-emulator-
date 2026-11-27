@@ -17,7 +17,8 @@ cp "$project_root/qemu/wave723.c" "$project_root/qemu/wave723_lcd.c" \
    "$project_root/qemu/wave723_lcd.h" "$project_root/qemu/wave723_onenand.c" \
    "$project_root/qemu/wave723_onenand.h" "$project_root/qemu/wave723_nand_geometry.h" \
    "$project_root/qemu/wave723_modem.c" "$project_root/qemu/wave723_modem.h" \
-   "$project_root/qemu/wave723_intc.c" "$project_root/qemu/wave723_intc.h" "$source_dir/hw/arm/"
+   "$project_root/qemu/wave723_intc.c" "$project_root/qemu/wave723_intc.h" \
+   "$project_root/qemu/wave723_gpt.c" "$project_root/qemu/wave723_gpt.h" "$source_dir/hw/arm/"
 if ! grep -q 'config WAVE723' "$source_dir/hw/arm/Kconfig"; then
     cat >> "$source_dir/hw/arm/Kconfig" <<'KCONFIG'
 
@@ -26,8 +27,8 @@ config WAVE723
 KCONFIG
 fi
 sed -i "/^arm_ss.add(when: 'CONFIG_WAVE723', if_true:/d" "$source_dir/hw/arm/meson.build"
-echo "arm_ss.add(when: 'CONFIG_WAVE723', if_true: files('wave723.c', 'wave723_lcd.c', 'wave723_onenand.c', 'wave723_modem.c', 'wave723_intc.c'))" >> "$source_dir/hw/arm/meson.build"
-printf 'CONFIG_WAVE723=y\nCONFIG_PL080=y\n' > "$source_dir/configs/devices/arm-softmmu/default.mak"
+echo "arm_ss.add(when: 'CONFIG_WAVE723', if_true: files('wave723.c', 'wave723_lcd.c', 'wave723_onenand.c', 'wave723_modem.c', 'wave723_intc.c', 'wave723_gpt.c'))" >> "$source_dir/hw/arm/meson.build"
+printf 'CONFIG_WAVE723=y\nCONFIG_PL080=y\nCONFIG_PTIMER=y\n' > "$source_dir/configs/devices/arm-softmmu/default.mak"
 
 args=(
     --target-list=arm-softmmu

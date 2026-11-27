@@ -214,7 +214,7 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
     const auto timeout = std::chrono::seconds(20 + instructionLimit / 5000000);
     const bool ok = run(engine, args, log, timeout);
     std::ifstream file(log);
-    std::string report(8192, '\0');
+    std::string report(65536, '\0');
     file.read(report.data(), report.size());
     report.resize(file.gcount());
     if (!ok || report.find("Stop: ") == std::string::npos) {

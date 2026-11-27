@@ -265,6 +265,11 @@ class Smoke(unittest.TestCase):
             0xE5834000, 0xE5834048, 0xE5834030,    # Enable for APPS and AMSS, set software IRQ
             0xE5939004, 0xE593A00C, 0xE593B04C,    # Raw status and both masked status registers
             0xE5834034, 0xE593C004,                # Clear the software source
+            (3, 0x08830114), (4, 32), 0xE5834004,   # GPT1 reloads after 32 ticks at 1 MHz
+            (4, 0x8b000000), 0xE5834000,
+            (1, 0x08810004), (2, 0x800),
+            0xE5910000, 0xE1100002, 0x0AFFFFFC,    # Poll the actual timer IRQ
+            (4, 1), 0xE5834000, 0xE5912000,        # Acknowledge the timer and stop it
             (3, 0x0bfffffc), 0xE5937000,
         ]))
         cp.write_bytes(program([
@@ -294,6 +299,8 @@ class Smoke(unittest.TestCase):
         for reg in (9, 10, 11):
             self.assertIn(f"r{reg}=0x00000800", result.stdout)
         self.assertIn("r12=0x00000000", result.stdout)
+        self.assertIn("r0=0x00000800", result.stdout)
+        self.assertIn("r2=0x00000000", result.stdout)
 
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})

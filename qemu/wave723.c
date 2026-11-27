@@ -19,6 +19,7 @@
 #include "target/arm/cpregs.h"
 #include "target/arm/cpu.h"
 #include "target/arm/arm-powerctl.h"
+#include "wave723_gpt.h"
 #include "wave723_lcd.h"
 #include "wave723_modem.h"
 #include "wave723_onenand.h"
@@ -28,8 +29,6 @@
 #define APPS_BASE 0x81000000
 #define RAM_SIZE (32 * MiB)
 #define APPS_MAX_RAM (256 * MiB)
-#define GPT0_COUNT 0x0883010c
-#define GPT0_FREQUENCY 32768
 #define INTC_ARM9_SLEEP 0x08810038
 #define SYSCFG_IOCR3 0x0888001c
 #define SYSCFG_IOCR3_RESERVED 0x82054008
@@ -70,9 +69,7 @@ struct Wave723State {
     Wave723Core primary;
     Wave723Core modem;
     MemoryRegion unmapped;
-    MemoryRegion gpt0_count;
-    int64_t gpt0_epoch;
-    uint32_t gpt0_reload;
+    Wave723Gpt gpt;
     MemoryRegion iocr3;
     uint32_t pin_config;
     MemoryRegion ramctrl;
@@ -98,7 +95,8 @@ struct Wave723State {
     bool diagnostic;
     bool capture_panel;
     bool survey;
-    Wave723SurveyReg survey_regs[48];
+    bool survey_apps_only;
+    Wave723SurveyReg survey_regs[192];
     unsigned survey_count;
     bool reported_ramctrl;
     bool reported_modem_abort;
@@ -185,7 +183,8 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
 
 static Wave723SurveyReg *wave723_survey_register(Wave723State *s, hwaddr address)
 {
-    if (!s->survey || address < 0x08000000 || address >= 0x09000000) {
+    if (!s->survey || address < 0x08000000 || address >= 0x09000000 ||
+        (s->survey_apps_only && current_cpu != CPU(s->primary.cpu))) {
         return NULL;
     }
     for (unsigned i = 0; i < s->survey_count; ++i) {
@@ -204,7 +203,8 @@ static Wave723SurveyReg *wave723_survey_register(Wave723State *s, hwaddr address
 static MemTxResult wave723_bus_error(Wave723State *s, hwaddr address, unsigned size,
                                      const uint64_t *value)
 {
-    if (s->modem.cpu && current_cpu == CPU(s->modem.cpu) && !s->survey) {
+    if (s->modem.cpu && current_cpu == CPU(s->modem.cpu) &&
+        (!s->survey || s->survey_apps_only)) {
         if (!s->reported_modem_abort) {
             printf("AMSS external abort: unmapped %s at 0x%08" PRIx64
                    " (%u bytes), PC 0x%08x\n", value ? "write" : "read",
@@ -280,31 +280,6 @@ static void wave723_ramctrl_write(void *opaque, hwaddr address, uint64_t value,
 static const MemoryRegionOps wave723_ramctrl_ops = {
     .read = wave723_ramctrl_read,
     .write = wave723_ramctrl_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 4 },
-    .impl = { .min_access_size = 4, .max_access_size = 4 },
-};
-
-static uint64_t wave723_gpt0_read(void *opaque, hwaddr address, unsigned size)
-{
-    Wave723State *s = opaque;
-    uint64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->gpt0_epoch;
-    uint32_t ticks = muldiv64(elapsed, GPT0_FREQUENCY, NANOSECONDS_PER_SECOND);
-
-    return s->gpt0_reload - ticks;
-}
-
-static void wave723_gpt0_write(void *opaque, hwaddr address, uint64_t value,
-                               unsigned size)
-{
-    Wave723State *s = opaque;
-    s->gpt0_reload = value;
-    s->gpt0_epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-}
-
-static const MemoryRegionOps wave723_gpt0_ops = {
-    .read = wave723_gpt0_read,
-    .write = wave723_gpt0_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = { .min_access_size = 4, .max_access_size = 4 },
     .impl = { .min_access_size = 4, .max_access_size = 4 },
@@ -418,14 +393,13 @@ static void wave723_reset(void *opaque)
     s->dsp_clock = 0;
     s->arm9_sleep = 0;
     s->pin_config = 0;
-    s->gpt0_reload = UINT32_MAX;
-    s->gpt0_epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->survey_count = 0;
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
     wave723_onenand_reset(&s->nand);
     wave723_modem_io_reset(&s->modem_io);
     if (s->modem.cpu) wave723_intc_reset(&s->intc);
+    wave723_gpt_reset(&s->gpt);
     cpu_set_pc(CPU(s->primary.cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
 }
@@ -476,7 +450,10 @@ static void wave723_init(MachineState *machine)
         s->diagnostic = true;
         limit += strlen("diagnostic:");
     }
-    if (limit && g_str_has_prefix(limit, "survey:")) {
+    if (limit && g_str_has_prefix(limit, "survey-apps:")) {
+        s->survey = s->survey_apps_only = true;
+        limit += strlen("survey-apps:");
+    } else if (limit && g_str_has_prefix(limit, "survey:")) {
         s->survey = true;
         limit += strlen("survey:");
     }
@@ -511,9 +488,7 @@ static void wave723_init(MachineState *machine)
                           s, "wave723-unmapped", UINT64_C(1) << 32);
     memory_region_add_subregion_overlap(memory, 0, &s->unmapped, -1);
     memory_region_add_subregion(memory, RAM_BASE, machine->ram);
-    memory_region_init_io(&s->gpt0_count, OBJECT(machine), &wave723_gpt0_ops,
-                          s, "wave723.gpt0-count", 4);
-    memory_region_add_subregion(memory, GPT0_COUNT, &s->gpt0_count);
+    wave723_gpt_init(&s->gpt, OBJECT(machine), memory, dual ? &s->intc : NULL);
     memory_region_init_io(&s->iocr3, OBJECT(machine), &wave723_iocr3_ops,
                           s, "wave723.syscfg-iocr3", 4);
     memory_region_add_subregion(memory, SYSCFG_IOCR3, &s->iocr3);

@@ -17,6 +17,17 @@ ram = int(gdb.parse_and_eval('$ram'))
 inferior = gdb.selected_inferior()
 def read_guest(address, length):
     return bytes(inferior.read_memory(ram + address - 0x80000000, length))
+pg5, = struct.unpack('<I', read_guest(0x808b4334, 4))
+print('AMSS page 5 shared memory:', hex(pg5))
+if 0x80000000 <= pg5 < 0x8ffff000:
+    producer, consumer = struct.unpack('<HH', read_guest(pg5 + 0x400, 4))
+    print('DSP command queue producer/consumer:', producer, consumer)
+    if producer < 128 and consumer < 128:
+        entries = [struct.unpack('<4H', read_guest(pg5 + 8*((consumer+i)%128), 8))
+                   for i in range((producer-consumer)%128)]
+        print('Queued DSP commands (ID, count):', [(hex(cmd), sum(1 for e in entries if e[0] == cmd))
+              for cmd in sorted({e[0] for e in entries})])
+        print('First queued commands:', entries[:6])
 # XXKG1 __xassert sets this flag and saves its four arguments at 0x80626484.
 if read_guest(0x808b3664, 4) == bytes((0xca,0,0,0)):
     args = struct.unpack('<4I', read_guest(0x808b3814, 16))

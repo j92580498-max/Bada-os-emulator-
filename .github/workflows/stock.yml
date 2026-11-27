@@ -11,9 +11,10 @@ on:
         default: '700000000'
         required: true
       survey:
-        description: Also trace unknown peripheral accesses after a stock boot stop
-        default: false
-        type: boolean
+        description: Also trace unknown peripheral accesses after the stock boot
+        default: 'off'
+        type: choice
+        options: ['off', 'apps', 'both']
 
 permissions:
   actions: read
@@ -68,9 +69,10 @@ jobs:
           xvfb-run -a -s '-screen 0 1600x1000x24' bash scripts/capture-stock.sh \
             ./wave723/wave723 "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" "$BUDGET"
       - name: Diagnostic peripheral survey
-        if: ${{ failure() && steps.stock.outcome == 'failure' && inputs.survey }}
+        if: ${{ failure() && steps.stock.outcome == 'failure' && inputs.survey != 'off' }}
         env:
           BUDGET: ${{ inputs.instructions }}
+          WAVE723_SURVEY_SCOPE: ${{ inputs.survey }}
         run: |
           export WAVE723_QEMU="$PWD/scripts/survey-engine.sh"
           export WAVE723_SURVEY_ENGINE="$PWD/wave723/qemu-system-arm"
