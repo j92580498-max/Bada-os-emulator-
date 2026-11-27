@@ -180,7 +180,9 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
     constexpr std::size_t mib = 1024 * 1024;
     const auto base = apps ? appsBase : amssBase;
     const auto needed = base - probeRamBase + image.size();
-    const auto ramMiB = std::max(probeRamSize / mib, (needed + mib - 1) / mib);
+    // The XXKG1 APPS startup memory map ends at 0x8fffffff.
+    const auto minimumRam = apps && diagnostic ? 256 * mib : probeRamSize;
+    const auto ramMiB = std::max(minimumRam / mib, (needed + mib - 1) / mib);
     const auto ramArg = std::to_string(ramMiB) + "M";
     const auto log = workspace.path / "qemu.log";
     const bool ok = run(engine, {

@@ -41,6 +41,31 @@ int main() {
         std::cerr << "Incorrect QMD output\n";
         return 1;
     }
+
+    word(image, block + 0x0c, 2);
+    word(image, block + 0x10, 3 * block);
+    word(image, block + 0x80, 8);
+    word(image, block + 0x84, block);
+    word(image, block + 0x88, 0x7c000000);
+    word(image, block + 0x8c, block);
+    word(image, block + 0x90, 1);
+    word(image, block + 0x94, 2 * block);
+    word(image, block + 0x98, 0x81100000);
+    word(image, block + 0x9c, block);
+    std::copy_n(image.begin() + block + 0x10c, 12, image.begin() + block + 0x118);
+    word(image, block + 0x10c, 0x0a);
+    word(image, block + 0x110, block);
+    word(image, block + 0x114, 0);
+
+    const auto resident = wave723::expandAppsQmd(image);
+    constexpr std::size_t relocated = 0x100000;
+    if (resident.size() != relocated + block || resident[0] != 0x42 ||
+        resident[block] != 0 || resident[relocated + 15] != 15 ||
+        resident.back() != 15) {
+        std::cerr << "Incorrect QMD resident section placement\n";
+        return 1;
+    }
+
     image.pop_back();
     try {
         wave723::expandAppsQmd(image);

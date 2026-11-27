@@ -1,4 +1,5 @@
 #include "qmd.hpp"
+#include "machine.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,7 @@ namespace {
 constexpr std::size_t blockSize = 256 * 1024;
 constexpr std::size_t pageSize = 4096;
 constexpr std::size_t maxExpandedSize = 128 * 1024 * 1024;
+constexpr std::size_t pagedBlock = maxExpandedSize;
 constexpr std::uint32_t qmdMagic = 0x00444d51;
 
 // QMD 0x0503 code dictionary documented by libSFormat.
@@ -165,6 +167,58 @@ void decodePages(Bytes input, std::uint8_t* output) {
     }
 }
 
+std::size_t layoutAppsBlocks(Bytes header, std::vector<std::size_t>& offsets) {
+    constexpr std::size_t maxSections = 8;
+    constexpr std::uint32_t resident = 1;
+    constexpr std::uint32_t paged = 8;
+    const auto count = header.u32(0x0c);
+    if (count == 0) {
+        for (std::size_t i = 0; i < offsets.size(); ++i) offsets[i] = i * blockSize;
+        return offsets.size() * blockSize;
+    }
+    if (count > maxSections) invalidQmd();
+
+    // The first raw block holds the reset vectors and precedes the section table.
+    std::size_t next = 1;
+    std::size_t size = blockSize;
+    std::array<bool, maxExpandedSize / blockSize> occupied{};
+    occupied[0] = true;
+    offsets[0] = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto section = header.sub(0x80 + 16 * i, 16);
+        const auto type = section.u32(0);
+        const auto source = section.u32(4);
+        const auto address = section.u32(8);
+        const auto length = section.u32(12);
+        const auto blocks = length / blockSize;
+        if (source != next * blockSize || length == 0 || length % blockSize ||
+            blocks > offsets.size() - next || address % blockSize ||
+            std::uint64_t(address) + length > (std::uint64_t{1} << 32)) {
+            invalidQmd();
+        }
+        if (type == paged) {
+            // The firmware uses a virtual range for this section after activating paging.
+            std::fill_n(offsets.begin() + next, blocks, pagedBlock);
+        } else if (type == resident) {
+            if (address < appsBase) invalidQmd();
+            const std::size_t start = address - appsBase;
+            if (start >= maxExpandedSize || length > maxExpandedSize - start) invalidQmd();
+            for (std::size_t j = 0; j < blocks; ++j) {
+                const auto block = start / blockSize + j;
+                if (occupied[block]) invalidQmd();
+                occupied[block] = true;
+                offsets[next + j] = block * blockSize;
+            }
+            size = std::max(size, start + length);
+        } else {
+            invalidQmd();
+        }
+        next += blocks;
+    }
+    if (next != offsets.size()) invalidQmd();
+    return size;
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> expandAppsQmd(std::vector<std::uint8_t> image) {
@@ -188,12 +242,14 @@ std::vector<std::uint8_t> expandAppsQmd(std::vector<std::uint8_t> image) {
     const auto table = input.sub(tableStart, 12 * (entries + 1));
     if (table.u32(12 * entries) != 0) invalidQmd();
 
-    std::vector<std::uint8_t> expanded(expandedSize);
+    std::vector<std::size_t> offsets(entries);
+    std::vector<std::uint8_t> expanded(layoutAppsBlocks(input.sub(*found, 0x100), offsets));
     for (std::size_t index = 0; index < entries; ++index) {
         try {
             const auto row = table.sub(12 * index, 12);
             const auto block = input.sub(row.u32(8), row.u32(4));
-            auto* output = expanded.data() + index * blockSize;
+            if (offsets[index] == pagedBlock) continue;
+            auto* output = expanded.data() + offsets[index];
             switch (row.u32(0)) {
             case 0x0f:
             case 0x0a:

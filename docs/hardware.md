@@ -3,8 +3,9 @@
 The target is the Samsung Wave 723 GT-S7230/E with Broadcom BCM2156. The current
 CPU model is QEMU's ARM1176, an ARM11-family approximation. The exact SoC
 revision, CP15 state and reset memory map remain unverified. The probe maps
-32 MiB from `0x80000000` for AMSS and expands that window to fit the APPS
-image when requested. These sizes are probe configurations.
+32 MiB from `0x80000000` for AMSS. Diagnostic APPS runs map RAM through
+`0x8fffffff`, the upper bound used by the XXKG1 startup routine at
+`0x81263b9e`. This covers the boot-mode data read at `0x8ff00008`.
 
 Photos of both sides of the supplied board show a `GTS7 230E` marking and
 a sticker ending in `EXXKG1`. The main package label is covered by the
@@ -41,8 +42,12 @@ with SEED markers and the version `S723E+XX+KG1`. `trace-apps` verifies the
 ZIP member, decrypts its payload and maps it at
 `0x81000000`. Its reset literal at offset `0x470` targets `0x81000674`.
 The decrypted XXKG1 payload has QMD `0x0503` tables at offsets `0x40000`
-and `0x80000`. The loader expands their raw, compressed-block and paged
-entries before mapping the image. The table describes a 94 MiB result.
+and `0x80000`. Their section descriptors at header offset `0x80` define
+where to stage the resident code and data. The 94 MiB logical image
+includes resident code at `0x81000000` through `0x81dfffff`, including the
+raw reset block, and 4 MiB of initialized data at `0x83400000`. The two
+paged sections use virtual addresses `0x7c000000` and `0xd6300000`.
+The reset loader defers those sections pending flash and paging support.
 APPS programs `0x08700015` and `0xffff0015` into the TCM region registers,
 corresponding to 16 KiB DTCM and 16 KiB ITCM at those bases. The APPS probe
 uses those sizes. At `0x81351dc8`, stock APPS initializes `0x3d10` bytes at
