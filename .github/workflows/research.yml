@@ -20,16 +20,26 @@ jobs:
           search() {
             local output="$1"
             shift
-            if ! gh search code "$@" --limit 25 --json repository,path,url > "results/$output.json"; then
-              status=1
-            fi
+            local error="results/$output.stderr"
+            for attempt in 1 2 3; do
+              if gh search code "$@" --limit 25 --json repository,path,url > "results/$output.json" 2>"$error"; then
+                rm "$error"
+                return
+              fi
+              if [[ $attempt == 3 ]] || ! rg -qi '(HTTP 429|rate limit|try again in)' "$error"; then
+                cat "$error" >&2
+                status=1
+                return
+              fi
+              sleep 22
+            done
           }
           search bcm2156 BCM2156
           search wave723 GT-S7230E
           search apps apps_compressed.bin
           search bcm21553 BCM21553 --repo assemblycore/qemu-bcm21553
-          sleep 7
           search bcm215xx BCM215XX --repo androidarmv6/android_kernel_samsung_bcm21553-common
+          search tktool TkToolVer
           exit "$status"
       - uses: actions/upload-artifact@v4
         if: always()
