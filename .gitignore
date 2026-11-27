@@ -1,0 +1,17 @@
+/build*/
+/dist/
+/.idea/
+/android/.gradle/
+/android/.cxx/
+/android/local.properties
+/android/app/.cxx/
+/android/app/build/
+/android/build/
+*.zip
+*.bin
+*.rc1
+*.rc2
+*.csc
+*.fota
+*.pfs
+*.app

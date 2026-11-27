@@ -1,0 +1,38 @@
+name: Hardware code search
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.CODE_SEARCH_TOKEN || github.token }}
+    steps:
+      - name: Search GitHub code
+        run: |
+          mkdir results
+          status=0
+          search() {
+            local output="$1"
+            shift
+            if ! gh search code "$@" --limit 25 --json repository,path,url > "results/$output.json"; then
+              status=1
+            fi
+          }
+          search bcm2156 BCM2156
+          search wave723 GT-S7230E
+          search apps apps_compressed.bin
+          search bcm21553 BCM21553 --repo assemblycore/qemu-bcm21553
+          sleep 7
+          search bcm215xx BCM215XX --repo androidarmv6/android_kernel_samsung_bcm21553-common
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave723-code-search
+          path: results/
