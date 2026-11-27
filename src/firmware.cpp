@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -76,7 +77,7 @@ std::string_view role(std::string_view name) {
 class Archive {
 public:
     explicit Archive(const std::filesystem::path& path)
-        : file_(path, std::ios::binary | std::ios::ate) {
+        : source_(path), file_(path, std::ios::binary | std::ios::ate) {
         const auto length = file_.tellg();
         if (length < 0) throw std::runtime_error("Could not open the firmware ZIP.");
         if (static_cast<std::uint64_t>(length) > maxZipBytes) {
@@ -188,6 +189,66 @@ public:
     }
 
 private:
+    void writeSysparms(const std::filesystem::path& workspace, std::ostream& flash) {
+        struct Parameter {
+            const char* name;
+            std::uint32_t address, size;
+            unsigned version;
+        };
+        constexpr std::array<Parameter, 2> params{{
+            {"sysparm_ind.img", 0x1efc0000, 0x11448, 26},
+            {"sysparm_dep.img", 0x1f000000, 0x01716, 1},
+        }};
+        std::array<std::optional<mz_zip_archive_file_stat>, 2> entries;
+        for (mz_uint index = 0; index < count(); ++index) {
+            const auto entry = stat(index);
+            const auto name = lowerAscii(basename(entry.m_filename));
+            for (std::size_t i = 0; i < params.size(); ++i) {
+                if (entry.m_is_directory || name != params[i].name) continue;
+                if (entries[i]) throw std::runtime_error("Duplicate modem system parameter file.");
+                entries[i] = entry;
+            }
+        }
+        const auto directory = source_.parent_path() / source_.stem() / "BOOTFILES";
+        const bool embedded = entries[0].has_value() || entries[1].has_value();
+        if (!embedded && std::none_of(params.begin(), params.end(), [&](const Parameter& part) {
+                return std::filesystem::exists(directory / part.name);
+            })) return;
+        for (std::size_t i = 0; i < params.size(); ++i) {
+            const auto& part = params[i];
+            const auto total = part.size + flashFooterSize;
+            std::vector<std::uint8_t> bytes;
+            if (embedded) {
+                if (!entries[i] || entries[i]->m_uncomp_size != total) {
+                    throw std::runtime_error(std::string("Missing or incorrect ") + part.name);
+                }
+                bytes = extract(*entries[i], "Could not verify modem system parameters");
+            } else {
+                std::ifstream input(directory / part.name, std::ios::binary | std::ios::ate);
+                if (input.tellg() != static_cast<std::streamoff>(total)) {
+                    throw std::runtime_error(std::string("Missing or incorrect ") + part.name);
+                }
+                bytes.resize(total);
+                input.seekg(0);
+                if (!input.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) {
+                    throw std::runtime_error(std::string("Could not read ") + part.name);
+                }
+            }
+            const auto* footer = bytes.data() + part.size;
+            if (word(footer) != footerMagic || word(footer + 4) != part.address ||
+                std::string_view(reinterpret_cast<const char*>(footer + 12), 7) !=
+                    std::string_view("S7230E\0", 7) ||
+                (word(bytes.data()) & 0xffff) != part.version) {
+                throw std::runtime_error(std::string("Incompatible Wave 723 modem parameters in ") + part.name);
+            }
+            writeFlashPayload(flash, part.address, bytes.data(), part.size);
+            std::ofstream payload(workspace / part.name, std::ios::binary);
+            payload.exceptions(std::ios::badbit | std::ios::failbit);
+            payload.write(reinterpret_cast<const char*>(bytes.data()), part.size);
+            payload.close();
+        }
+    }
+
     void writeFactoryImage(const std::filesystem::path& path, const std::vector<std::uint8_t>& apps) {
         std::ofstream flash(path, std::ios::binary);
         flash.exceptions(std::ios::badbit | std::ios::failbit);
@@ -224,6 +285,7 @@ private:
                 modem.close();
             }
         }
+        writeSysparms(path.parent_path(), flash);
         flash.close();
     }
 
@@ -241,6 +303,7 @@ private:
             mz_zip_get_error_string(mz_zip_get_last_error(&zip_)) + ".");
     }
 
+    std::filesystem::path source_;
     std::ifstream file_;
     mz_zip_archive zip_{};
 };

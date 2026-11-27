@@ -19,6 +19,7 @@
 #include "target/arm/cpu.h"
 #include "target/arm/arm-powerctl.h"
 #include "wave723_lcd.h"
+#include "wave723_modem.h"
 #include "wave723_onenand.h"
 
 #define RAM_BASE 0x80000000
@@ -88,6 +89,7 @@ struct Wave723State {
     MemoryRegion diagnostic_startup_data;
     Wave723Lcd lcd;
     Wave723OneNand nand;
+    Wave723ModemIO modem_io;
     QEMUTimer *deadline;
     int64_t limit;
     uint32_t reset_vector;
@@ -160,6 +162,13 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
     if (s->modem.cpu) {
         printf("\nAPPS PC 0x%08x  AMSS PC 0x%08x", s->primary.cpu->env.regs[15],
                s->modem.cpu->env.regs[15]);
+        if (s->diagnostic) {
+            const uint8_t *ram = memory_region_get_ram_ptr(s->parent_obj.ram);
+            printf("\nAMSS shared table: signature 0x%08x, entries %u",
+                   ldl_le_p(ram + 0xb4000), ldl_le_p(ram + 0xb4004));
+            printf("\nLCD: %" PRIu64 " pixels, sleep-out %u, display-on %u",
+                   s->lcd.writes, s->lcd.awake, s->lcd.display_on);
+        }
     }
     printf("\nPC 0x%08" PRIx32 "  CPSR 0x%08" PRIx32 "\n",
            env->regs[15], cpsr_read(env));
@@ -392,6 +401,7 @@ static void wave723_reset(void *opaque)
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
     wave723_onenand_reset(&s->nand);
+    wave723_modem_io_reset(&s->modem_io);
     cpu_set_pc(CPU(s->primary.cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
 }
@@ -500,6 +510,9 @@ static void wave723_init(MachineState *machine)
     memory_region_add_subregion(memory, INTC_ARM9_SLEEP, &s->arm9_sleep_reg);
     wave723_lcd_init(&s->lcd, OBJECT(machine), memory);
     wave723_onenand_init(&s->nand, OBJECT(machine), memory);
+    if (dual) {
+        wave723_modem_io_init(&s->modem_io, OBJECT(machine), memory, &s->modem.view);
+    }
     if ((s->diagnostic && s->reset_vector == AMSS_BASE) || dual) {
         Wave723Core *cp = dual ? &s->modem : &s->primary;
         /* AMSS copies 0x1af0c bytes to 0x80, across the 64 KiB ITCM boundary. */

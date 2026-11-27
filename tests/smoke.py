@@ -159,17 +159,22 @@ class Smoke(unittest.TestCase):
                       self.execute("boot", str(image), "128", status=1))
         self.assertFalse(image.exists())
 
-    def test_xxkg1_boot_provisions_the_factory_flash(self):
-        def component(start, payload=b"test payload"):
-            footer = bytearray(1024)
-            struct.pack_into("<II", footer, 0, 0xABCDABCD, start)
-            return payload + footer
+    @staticmethod
+    def component(start, payload=b"test payload"):
+        footer = bytearray(1024)
+        struct.pack_into("<II", footer, 0, 0xABCDABCD, start)
+        footer[12:18] = b"S7230E"
+        return payload + footer
 
+    def factory_components(self):
         apps = bytearray(apps_image())
         apps[-1024 + 0x1e8:-1024 + 0x1f4] = b"S723E+XX+KG1"
-        files = {"apps_compressed.bin": apps, "amss.bin": component(0x00200000, amss_image()),
-                 "sample.rc1": component(0x04100000), "sample.rc2": component(0x1eb00000),
-                 "sample.fota": component(0x08a00000)}
+        return {"apps_compressed.bin": apps, "amss.bin": self.component(0x00200000, amss_image()),
+                "sample.rc1": self.component(0x04100000), "sample.rc2": self.component(0x1eb00000),
+                "sample.fota": self.component(0x08a00000)}
+
+    def test_xxkg1_boot_provisions_the_factory_flash(self):
+        files = self.factory_components()
         self.write(files)
         png = self.path.with_suffix(".png")
         result = subprocess.run([str(CLI), "boot", str(self.path), str(png), "128"],
@@ -178,10 +183,46 @@ class Smoke(unittest.TestCase):
         self.assertIn("XXKG1 FSR volume and flash components attached", result.stdout)
         self.assertIn("r2=0x08700015", result.stdout)
         self.assertFalse(png.exists())
-        files["sample.rc1"] = component(0x00200000)
+        files["sample.rc1"] = self.component(0x00200000)
         self.write(files)
         self.assertIn("Unexpected XXKG1 flash footer for RSRC1",
                       self.execute("boot", str(png), "128", status=1))
+
+    def test_sysparm_sources_and_versions(self):
+        files = self.factory_components()
+        params = {}
+        for name, start, size, version in (("ind", 0x1efc0000, 0x11448, 26),
+                                           ("dep", 0x1f000000, 0x1716, 1)):
+            data = bytearray(size)
+            struct.pack_into("<H", data, 0, version)
+            params[f"sysparm_{name}.img"] = self.component(start, data)
+        png = self.path.with_suffix(".png")
+        directory = self.path.with_suffix("") / "BOOTFILES"
+        directory.mkdir(parents=True)
+        self.write(files)
+        for name, data in params.items():
+            (directory / name).write_bytes(data)
+        for source in ("sibling", "embedded"):
+            with self.subTest(source=source):
+                if source == "embedded":
+                    for name in params:
+                        (directory / name).unlink()
+                    self.write({**files, **params})
+                result = subprocess.run([str(CLI), "boot", str(self.path), str(png), "128"],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("AMSS system parameters: S7230E formats 26 and 1 loaded", result.stdout)
+                self.assertIn("unimplemented RAMCTRL setting", result.stdout)
+        self.write({**files, "sysparm_ind.img": params["sysparm_ind.img"]})
+        self.assertIn("Missing or incorrect sysparm_dep.img", self.execute("boot", str(png), status=1))
+        for name, data in params.items():
+            with self.subTest(invalid=name):
+                invalid = bytearray(data)
+                invalid[0] += 1
+                self.write({**files, **params, name: invalid})
+                self.assertIn("Incompatible Wave 723 modem parameters in " + name,
+                              self.execute("boot", str(png), status=1))
+        self.assertFalse(png.exists())
 
     def test_modem_starts_from_mailbox_and_has_private_tcm(self):
         # (register, value) emits an ARM literal load. Other entries are opcodes.

@@ -51,6 +51,14 @@ QemuWorkspace::~QemuWorkspace() {
 
 namespace {
 
+std::string qemuOptionPath(const fs::path& path) {
+    auto name = fs::absolute(path).u8string();
+    for (std::size_t i = 0; (i = name.find(',', i)) != name.npos; i += 2) {
+        name.insert(i, 1, ',');
+    }
+    return name;
+}
+
 fs::path enginePath(const fs::path& requested) {
     if (!requested.empty()) return requested;
 #ifdef _WIN32
@@ -191,14 +199,17 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
     };
     const auto flash = workspace.path / "onenand.img";
     const bool hasFlash = fs::is_regular_file(flash);
+    const auto ind = workspace.path / "sysparm_ind.img";
+    const auto dep = workspace.path / "sysparm_dep.img";
+    const bool hasSysparms = fs::is_regular_file(ind);
     if (hasFlash) {
-        auto name = fs::absolute(flash).u8string();
-        for (std::size_t i = 0; (i = name.find(',', i)) != name.npos; i += 2) {
-            name.insert(i, 1, ',');
-        }
         args.emplace_back("-drive");
-        args.push_back(fs::u8path("if=none,id=wave723-factory,format=raw,file=" + name));
+        args.push_back(fs::u8path("if=none,id=wave723-factory,format=raw,file=" + qemuOptionPath(flash)));
         args.insert(args.end(), {"-smp", "2", "-initrd", workspace.path / "amss.bin"});
+    }
+    if (hasSysparms) {
+        args.insert(args.end(), {"-device", fs::u8path("loader,addr=0x80080000,force-raw=on,file=" + qemuOptionPath(ind)),
+                                 "-device", fs::u8path("loader,addr=0x800b0000,force-raw=on,file=" + qemuOptionPath(dep))});
     }
     const auto timeout = std::chrono::seconds(20 + instructionLimit / 5000000);
     const bool ok = run(engine, args, log, timeout);
@@ -233,6 +244,7 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
                 << instructionLimit << '\n';
     if (apps) description << "APPS bytes staged: " << image.size() << '\n';
     if (hasFlash) description << "OneNAND: XXKG1 FSR volume and flash components attached\n";
+    if (hasSysparms) description << "AMSS system parameters: S7230E formats 26 and 1 loaded\n";
     description << report;
     return description.str();
 }
