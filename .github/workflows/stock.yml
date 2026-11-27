@@ -44,7 +44,7 @@ jobs:
       - name: Install screenshot tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends xvfb xauth xterm xdotool imagemagick fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends xvfb xauth xterm xdotool imagemagick fonts-dejavu-core gdb
       - name: Stage the private test input
         env:
           MEDIA_URL: ${{ secrets.WAVE723_MEDIA_URL }}

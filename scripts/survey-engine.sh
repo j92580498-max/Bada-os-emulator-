@@ -5,7 +5,8 @@ args=("$@")
 for ((i=0; i+1<${#args[@]}; ++i)); do
     if [[ ${args[i]} == -append && ${args[i+1]} == capture:diagnostic:apps:* ]]; then
         args[i+1]="diagnostic:survey:${args[i+1]#capture:diagnostic:}"
-        exec "$WAVE723_SURVEY_ENGINE" "${args[@]}"
+        exec gdb -nx -q -batch -x "$(dirname "$0")/xxkg1-stop.gdb" \
+            --args "$WAVE723_SURVEY_ENGINE" "${args[@]}"
     fi
 done
 exit 2
