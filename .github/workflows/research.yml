@@ -9,14 +9,14 @@ permissions:
 jobs:
   search:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     env:
       GH_TOKEN: ${{ secrets.CODE_SEARCH_TOKEN || github.token }}
     steps:
       - name: Search GitHub code
         run: |
           mkdir results
-          status=0
+          successes=0
           search() {
             local output="$1"
             shift
@@ -25,11 +25,12 @@ jobs:
             for attempt in 1 2 3; do
               if gh search code "$@" --limit 25 --json repository,path,url > "results/$output.json" 2>"$error"; then
                 rm "$error"
+                successes=$((successes + 1))
                 return
               fi
               if [[ $attempt == 3 || ! $(<"$error") =~ $retry_pattern ]]; then
                 cat "$error" >&2
-                status=1
+                echo "::warning::Code search failed for $output. See the query artifact."
                 return
               fi
               sleep 30
@@ -41,7 +42,7 @@ jobs:
           search bcm21553 BCM21553 --repo assemblycore/qemu-bcm21553
           search bcm215xx BCM215XX --repo androidarmv6/android_kernel_samsung_bcm21553-common
           search tktool TkToolVer
-          exit "$status"
+          test "$successes" -gt 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:

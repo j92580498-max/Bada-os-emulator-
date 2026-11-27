@@ -33,7 +33,16 @@ public:
         std::random_device random;
         for (int attempt = 0; attempt < 10; ++attempt) {
             path = parent / ("wave723-" + std::to_string(random()) + "-" + std::to_string(random()));
-            if (fs::create_directory(path)) return;
+            if (!fs::create_directory(path)) continue;
+#ifndef _WIN32
+            std::error_code error;
+            fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, error);
+            if (error) {
+                fs::remove(path);
+                throw std::runtime_error("Could not protect the QEMU workspace.");
+            }
+#endif
+            return;
         }
         throw std::runtime_error("Could not create a QEMU workspace.");
     }

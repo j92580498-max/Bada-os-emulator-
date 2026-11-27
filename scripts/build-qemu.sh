@@ -49,6 +49,9 @@ case "$platform" in
         python3 "$source_dir/contrib/portable/build-deps.py" "$deps_dir" \
             --abi "$platform" --ndk "$WAVE723_ANDROID_NDK"
         export PKG_CONFIG_LIBDIR="$deps_dir/prefix/lib/pkgconfig:$deps_dir/prefix/share/pkgconfig"
+        printf '#!/bin/sh\nexec pkg-config --static "$@"\n' > "$build_dir/target-pkg-config"
+        chmod +x "$build_dir/target-pkg-config"
+        export PKG_CONFIG="$build_dir/target-pkg-config"
         export AR="$toolbin/llvm-ar"
         args+=(
             "--cc=$toolbin/${triple}28-clang"
@@ -57,8 +60,8 @@ case "$platform" in
             "--cpu=$arch"
             --cross-prefix=
             --disable-containers
-            "--extra-ldflags=-Wl,-z,max-page-size=16384"
-            --static
+            "--extra-ldflags=-Wl,-z,max-page-size=16384 -static-libstdc++"
+            --enable-pie
         )
         ;;
     *)

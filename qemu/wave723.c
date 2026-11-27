@@ -5,6 +5,7 @@
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "hw/arm/machines-qom.h"
 #include "hw/core/boards.h"
 #include "hw/core/loader.h"
 #include "system/address-spaces.h"
@@ -119,4 +120,4 @@ static void wave723_class_init(MachineClass *mc)
     mc->init = wave723_init;
 }
 
-DEFINE_MACHINE("wave723", wave723_class_init)
+DEFINE_MACHINE_ARM("wave723", wave723_class_init)
