@@ -51,9 +51,22 @@ The reset loader defers those sections pending flash and paging support.
 APPS programs `0x08700015` and `0xffff0015` into the TCM region registers,
 corresponding to 16 KiB DTCM and 16 KiB ITCM at those bases. The APPS probe
 uses those sizes. At `0x81351dc8`, stock APPS initializes `0x3d10` bytes at
-`0xffff0400`, through address `0xffff410f`. The last 272 bytes extend beyond
-the programmed ITCM. Diagnostic runs map a provisional 4 KiB page at
-`0xffff4000` to cover the observed initialization.
+`0xffff0400`, through address `0xffff410f`. The firmware MMU descriptors
+map a 32 KiB window at `0xffff0000`. At `0x81000c20`, APPS disables ITCM
+briefly to store the AMSS entry address at `0xffff0020`. The model maps
+SRAM across the window, with ITCM taking priority when enabled.
+
+At `0x81360362`, APPS reads the GPT0 down-counter at `0x0883010c`.
+The model starts it at `0xffffffff` and advances it at 32,768 Hz in virtual
+time. Stock APPS inverts the count and divides by 32 for its millisecond
+timebase. The GPT control and interrupt registers still need modeling.
+[BCM21553 GPT reference](https://github.com/assemblycore/qemu-bcm21553/blob/6cd03d2c2a3c4cfc3b36c0cef46a7dc2821e50d0/hw/arm/bcm21553.c)
+
+The handoff routine also sets bit 21 in `SYSCFG_IOCR3` at `0x0888001c`.
+The register retains pin configuration writes and preserves its reserved
+bits.
+[Broadcom SYSCFG register database](https://github.com/MoltenMotherBoard/platform_kernel_samsung_cori/blob/733fd4478845a1125715f5a05eaf8847d49bafd0/arch/arm/plat-bcmap/include/plat/rdb/brcm_rdb_syscfg.h#L189)
+
 Booting bada requires further board emulation.
 
 ## First LCD frame

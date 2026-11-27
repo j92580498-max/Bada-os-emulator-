@@ -2,6 +2,7 @@
 /* Samsung Wave 723 BCM2156 reset probes. */
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
+#include "qemu/host-utils.h"
 #include "qemu/main-loop.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
@@ -22,10 +23,15 @@
 #define APPS_BASE 0x81000000
 #define RAM_SIZE (32 * MiB)
 #define APPS_MAX_RAM (256 * MiB)
+#define GPT0_COUNT 0x0883010c
+#define GPT0_FREQUENCY 32768
+#define SYSCFG_IOCR3 0x0888001c
+#define SYSCFG_IOCR3_RESERVED 0x82054008
 #define SYSCFG_RAMCTRL 0x08880048
 #define CLKPWR_ARMAHB_MODE 0x08140000
 #define AMSS_STACK_SRAM_BASE 0x08708000
-#define APPS_HIGH_SRAM_TAIL 0xffff4000
+#define APPS_HIGH_SRAM 0xffff0000
+#define APPS_HIGH_SRAM_SIZE (32 * KiB)
 #define APPS_STARTUP_DATA 0x8bd00000
 #define TYPE_WAVE723_MACHINE MACHINE_TYPE_NAME("wave723")
 
@@ -48,11 +54,16 @@ struct Wave723State {
     MachineState parent_obj;
     ARMCPU *cpu;
     MemoryRegion unmapped;
+    MemoryRegion gpt0_count;
+    int64_t gpt0_epoch;
+    uint32_t gpt0_reload;
+    MemoryRegion iocr3;
+    uint32_t pin_config;
     MemoryRegion ramctrl;
     MemoryRegion armahb_mode;
     uint32_t clock_mode;
     MemoryRegion diagnostic_stack;
-    MemoryRegion diagnostic_high_sram;
+    MemoryRegion high_sram;
     MemoryRegion diagnostic_startup_data;
     Wave723Lcd lcd;
     Wave723Tcm tcm[2];
@@ -214,6 +225,52 @@ static const MemoryRegionOps wave723_ramctrl_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+static uint64_t wave723_gpt0_read(void *opaque, hwaddr address, unsigned size)
+{
+    Wave723State *s = opaque;
+    uint64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->gpt0_epoch;
+    uint32_t ticks = muldiv64(elapsed, GPT0_FREQUENCY, NANOSECONDS_PER_SECOND);
+
+    return s->gpt0_reload - ticks;
+}
+
+static void wave723_gpt0_write(void *opaque, hwaddr address, uint64_t value,
+                               unsigned size)
+{
+    Wave723State *s = opaque;
+    s->gpt0_reload = value;
+    s->gpt0_epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+static const MemoryRegionOps wave723_gpt0_ops = {
+    .read = wave723_gpt0_read,
+    .write = wave723_gpt0_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static uint64_t wave723_iocr3_read(void *opaque, hwaddr address, unsigned size)
+{
+    Wave723State *s = opaque;
+    return s->pin_config;
+}
+
+static void wave723_iocr3_write(void *opaque, hwaddr address, uint64_t value,
+                                unsigned size)
+{
+    Wave723State *s = opaque;
+    s->pin_config = value & ~SYSCFG_IOCR3_RESERVED;
+}
+
+static const MemoryRegionOps wave723_iocr3_ops = {
+    .read = wave723_iocr3_read,
+    .write = wave723_iocr3_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
 static uint64_t wave723_clock_mode_read(void *opaque, hwaddr address, unsigned size)
 {
     Wave723State *s = opaque;
@@ -258,6 +315,9 @@ static void wave723_reset(void *opaque)
     s->reported = false;
     s->reported_ramctrl = false;
     s->clock_mode = 0;
+    s->pin_config = 0;
+    s->gpt0_reload = UINT32_MAX;
+    s->gpt0_epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->survey_count = 0;
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
@@ -311,6 +371,12 @@ static void wave723_init(MachineState *machine)
                           s, "wave723-unmapped", UINT64_C(1) << 32);
     memory_region_add_subregion_overlap(memory, 0, &s->unmapped, -1);
     memory_region_add_subregion(memory, RAM_BASE, machine->ram);
+    memory_region_init_io(&s->gpt0_count, OBJECT(machine), &wave723_gpt0_ops,
+                          s, "wave723.gpt0-count", 4);
+    memory_region_add_subregion(memory, GPT0_COUNT, &s->gpt0_count);
+    memory_region_init_io(&s->iocr3, OBJECT(machine), &wave723_iocr3_ops,
+                          s, "wave723.syscfg-iocr3", 4);
+    memory_region_add_subregion(memory, SYSCFG_IOCR3, &s->iocr3);
     memory_region_init_io(&s->ramctrl, OBJECT(machine), &wave723_ramctrl_ops,
                           s, "wave723.syscfg-ramctrl", 4);
     memory_region_add_subregion(memory, SYSCFG_RAMCTRL, &s->ramctrl);
@@ -326,13 +392,14 @@ static void wave723_init(MachineState *machine)
         memory_region_add_subregion(memory, AMSS_STACK_SRAM_BASE, &s->diagnostic_stack);
         printf("Diagnostic: AMSS stack RAM mapped at 0x08708000 (32 KiB)\n");
     }
-    if (s->diagnostic && s->reset_vector == APPS_BASE) {
-        /* XXKG1 copies 0x3d10 bytes to 0xffff0400 during APPS startup. */
-        memory_region_init_ram_flags_nomigrate(&s->diagnostic_high_sram, OBJECT(machine),
-                                               "wave723.apps-high-sram", 4 * KiB, 0,
+    if (s->reset_vector == APPS_BASE) {
+        /* XXKG1 maps 32 KiB here and disables ITCM to access the SRAM. */
+        memory_region_init_ram_flags_nomigrate(&s->high_sram, OBJECT(machine),
+                                               "wave723.apps-high-sram", APPS_HIGH_SRAM_SIZE, 0,
                                                &error_fatal);
-        memory_region_add_subregion(memory, APPS_HIGH_SRAM_TAIL, &s->diagnostic_high_sram);
-        printf("Diagnostic: APPS high SRAM mapped at 0xffff4000 (4 KiB)\n");
+        memory_region_add_subregion(memory, APPS_HIGH_SRAM, &s->high_sram);
+    }
+    if (s->diagnostic && s->reset_vector == APPS_BASE) {
         /* The startup routine at 0x81355dfc builds two records here. */
         if (RAM_BASE + machine->ram_size <= APPS_STARTUP_DATA) {
             memory_region_init_ram_flags_nomigrate(&s->diagnostic_startup_data,
