@@ -62,6 +62,7 @@ jobs:
           install: >-
             git make diffutils
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-glew
             mingw-w64-ucrt-x86_64-glib2
             mingw-w64-ucrt-x86_64-pixman
             mingw-w64-ucrt-x86_64-pkgconf

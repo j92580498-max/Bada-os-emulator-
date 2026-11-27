@@ -11,6 +11,7 @@ source_dir=$(cd "$1" && pwd)
 mkdir -p "$2"
 build_dir=$(cd "$2" && pwd)
 platform=$3
+binary=qemu-system-arm
 
 cp "$project_root/qemu/wave723.c" "$source_dir/hw/arm/wave723.c"
 if ! grep -q 'config WAVE723' "$source_dir/hw/arm/Kconfig"; then
@@ -33,7 +34,10 @@ args=(
 )
 
 case "$platform" in
-    linux|windows)
+    linux)
+        ;;
+    windows)
+        binary=qemu-system-arm.exe
         ;;
     arm64-v8a|x86_64)
         : "${WAVE723_ANDROID_NDK:?Set the Android NDK directory}"
@@ -45,10 +49,10 @@ case "$platform" in
         python3 "$source_dir/contrib/portable/build-deps.py" "$deps_dir" \
             --abi "$platform" --ndk "$WAVE723_ANDROID_NDK"
         export PKG_CONFIG_LIBDIR="$deps_dir/prefix/lib/pkgconfig:$deps_dir/prefix/share/pkgconfig"
+        export AR="$toolbin/llvm-ar"
         args+=(
             "--cc=$toolbin/${triple}28-clang"
             "--cxx=$toolbin/${triple}28-clang++"
-            "--ar=$toolbin/llvm-ar"
             "--host-cc=gcc"
             "--cpu=$arch"
             --cross-prefix=
@@ -65,4 +69,4 @@ esac
 
 cd "$build_dir"
 "$source_dir/configure" "${args[@]}"
-make -j "${WAVE723_BUILD_JOBS:-4}" qemu-system-arm
+make -j "${WAVE723_BUILD_JOBS:-4}" "$binary"

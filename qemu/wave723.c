@@ -5,16 +5,8 @@
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#if __has_include("hw/core/boards.h")
 #include "hw/core/boards.h"
-#else
-#include "hw/boards.h"
-#endif
-#if __has_include("hw/core/loader.h")
 #include "hw/core/loader.h"
-#else
-#include "hw/loader.h"
-#endif
 #include "system/address-spaces.h"
 #include "system/reset.h"
 #include "system/runstate.h"
@@ -111,11 +103,8 @@ static void wave723_init(MachineState *machine)
                           s, "wave723-unmapped", UINT64_C(1) << 32);
     memory_region_add_subregion_overlap(memory, 0, &s->unmapped, -1);
     memory_region_add_subregion(memory, RAM_BASE, machine->ram);
-    if (load_image_targphys(machine->kernel_filename, AMSS_BASE,
-                            RAM_SIZE - (AMSS_BASE - RAM_BASE)) < 0) {
-        error_report("Could not load Wave 723 AMSS image.");
-        exit(1);
-    }
+    load_image_targphys(machine->kernel_filename, AMSS_BASE,
+                        RAM_SIZE - (AMSS_BASE - RAM_BASE), &error_fatal);
     s->deadline = timer_new_ns(QEMU_CLOCK_VIRTUAL, wave723_timeout, s);
     qemu_register_reset(wave723_reset, s);
 }
