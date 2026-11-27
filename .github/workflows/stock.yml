@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run:
-        description: Successful Build and test run on main
+        description: Build run on main with a successful linux-arm64 job
         required: true
       instructions:
         description: Guest instruction budget
@@ -38,8 +38,10 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" |
             jq -e --arg repo "$GITHUB_REPOSITORY" '
               .head_repository.full_name == $repo and .head_branch == "main" and
-              .path == ".github/workflows/build.yml" and .conclusion == "success" and
+              .path == ".github/workflows/build.yml" and
               (.event == "push" or .event == "workflow_dispatch")'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN/jobs" |
+            jq -e 'any(.jobs[]; .name == "linux-arm64" and .conclusion == "success")'
           gh run download "$BUILD_RUN" -R "$GITHUB_REPOSITORY" -n wave723-linux-arm64
           tar -xzf wave723-linux-arm64.tar.gz
       - name: Install screenshot tools

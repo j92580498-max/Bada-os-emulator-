@@ -1,7 +1,7 @@
 # Wave 723 hardware notes
 
 The target is the Samsung Wave 723 GT-S7230/E with Broadcom BCM2156. The current
-CPU model is QEMU's ARM1176, an ARM11-family approximation. The exact SoC
+stock boot uses QEMU's ARM1176 for APPS and ARM926 for AMSS. The exact SoC
 revision, CP15 state and reset memory map remain unverified. The probe maps
 32 MiB from `0x80000000` for AMSS. Diagnostic APPS runs map RAM through
 `0x8fffffff`, the upper bound used by the XXKG1 startup routine at
@@ -59,14 +59,16 @@ SRAM across the window, with ITCM taking priority when enabled.
 At `0x81360362`, APPS reads the GPT0 down-counter at `0x0883010c`.
 The model starts it at `0xffffffff` and advances it at 32,768 Hz in virtual
 time. Stock APPS inverts the count and divides by 32 for its millisecond
-timebase. The GPT control and interrupt registers still need modeling.
+timebase. The six GPT channels have reload, down-counter, control and
+write-one-to-clear terminal-count registers. Their IRQ outputs connect to
+sources 11 and 68 of the interrupt controller.
 [BCM21553 GPT reference](https://github.com/assemblycore/qemu-bcm21553/blob/6cd03d2c2a3c4cfc3b36c0cef46a7dc2821e50d0/hw/arm/bcm21553.c)
 
 The handoff routine also sets bit 21 in `SYSCFG_IOCR3` at `0x0888001c`.
 The register retains pin configuration writes and preserves its reserved
 bits. Stock APPS then writes `6` to the interrupt controller's
-`ARM9_SLEEP` register at `0x08810038`. QEMU retains the register value.
-Running an AMSS core alongside APPS remains pending.
+`ARM9_SLEEP` register at `0x08810038`. This releases AMSS at the entry point
+written by APPS. Each core has private TCM and sees the same external RAM.
 [Broadcom SYSCFG register database](https://github.com/MoltenMotherBoard/platform_kernel_samsung_cori/blob/733fd4478845a1125715f5a05eaf8847d49bafd0/arch/arm/plat-bcmap/include/plat/rdb/brcm_rdb_syscfg.h#L189)
 
 ## OneNAND
@@ -74,23 +76,39 @@ Running an AMSS core alongside APPS remains pending.
 Stock APPS reads the 16-bit manufacturer ID at `0x0041e000` and expects
 `0xec` for Samsung. This locates the OneNAND window at `0x00400000`.
 The model uses the related Totoro model's 512 MiB geometry with 4 KiB
-pages. It exposes the data and spare buffers and supports read commands.
-The Wave 723 chip revision and spare-area contents remain unverified.
+pages, 128 spare bytes per page and 64 pages per block. It implements main
+and spare reads, bitwise programming, erase and block protection.
 [Linux OneNAND registers](https://github.com/torvalds/linux/blob/9437ee8b6cf607e883b36e44bd755968daaebd48/include/linux/mtd/onenand_regs.h)
 [Totoro OneNAND model](https://github.com/assemblycore/qemu-bcm21553/blob/6cd03d2c2a3c4cfc3b36c0cef46a7dc2821e50d0/hw/arm/totoro-onenand-probe.h)
 
 To attach a page-aligned dump of the main NAND area, pass
 `-drive if=none,id=wave723-flash,format=raw,readonly=on,file=flash.bin`
-when running QEMU directly. The `boot` command currently starts with erased
-flash. The firmware ZIP holds update files and flash offsets and still
-needs to be translated into the NAND volume expected by the firmware.
-
-With erased flash, stock XXKG1 reaches the Samsung FSR block manager.
-The volume open call at `0x812831dc` returns `0x90330000`
-(`FSR_BML_NO_UPCB`, missing unlocked pool control block). The firmware
-then branches to itself at `0x81253988` before drawing an LCD frame.
-The update ZIP lacks this on-flash volume metadata.
+when running QEMU directly. The normal XXKG1 boot constructs a private NAND
+image with the locked and unlocked FSR pool control blocks and eight partition
+records. Volume open returns `0x10000000` and the partition checks finish at
+`0x8125395c`. Each boot starts from the supplied update. APPS, AMSS, both
+resource images, FOTA and the nested QMD `CSC.rcs` go at their Samsung flash
+offsets. In the supplied CSC, the nested descriptor and footer both place
+0x680000 payload bytes at `0x07d00000`. Filesystem records in CSC.sfs, ShpApp
+and PFS still require installation.
 [Samsung FSR return codes](https://github.com/CyanogenMod/samsung-kernel-galaxys/blob/478280015136456e6410f3f6b60260e4b104272f/drivers/tfsr/Inc/FSR_BML.h#L263)
+
+## Modem handoff
+
+The XEKF1 service pair supplies the missing SysParm blocks for XXKG1. The
+loader validates the model, extent, version and flash address, then loads
+their payloads at `0x80080000` and `0x800b0000`. On a hosted stock run AMSS
+published `0x5059504d` and 42 entries at `0x800b4000`. The application
+processor subsequently reached its timer initialization at `0x8135365e`.
+[Hosted stock trace](https://github.com/j92580498-max/Bada-os-emulator-/actions/runs/46024693589)
+
+In a separate peripheral survey, the firmware recorded a modem assertion in
+`src/sharedmem.c` at line 1191 when the DSP command ring filled. Its producer
+uses 128 eight-byte slots. The interrupt controller has shared pending sources
+and separate APPS and modem masks. A bus error on the modem delivers an ARM926
+external abort while APPS continues executing.
+[Broadcom command queue driver](https://github.com/Maroc-OS/Merruk-Technology/blob/fe3048483538f9e1d08a8ee1dd6a8dbbbe82a7b6/modules/drivers/sound/brcm/alsa/sharedmem.c)
+[Hosted assertion trace](https://github.com/j92580498-max/Bada-os-emulator-/actions/runs/46024248277)
 
 ## First LCD frame
 
@@ -103,7 +121,8 @@ commands through QEMU. The host displays or saves QEMU's resulting frame.
 The LCD model uses the BCM21553 reference PIO register layout. The command,
 data and status registers are at offsets `0x00`, `0x04` and `0x1c` from
 `0x08030000`. The model implements RGB565 panel memory, addressing windows and
-display enable. DMA and stock firmware display initialization remain pending.
+display enable. The QEMU PL080 is mapped at `0x08020000`. The stock LCD
+transfer sequence still needs verification.
 [Broadcom LCD register definitions](https://github.com/MoltenMotherBoard/platform_kernel_samsung_cori/blob/733fd4478845a1125715f5a05eaf8847d49bafd0/drivers/video/broadcom/dss/bcm215xx/reg_lcdc.h)
 
 Stock APPS contains the same command, data and status addresses. The

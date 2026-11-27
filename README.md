@@ -1,11 +1,9 @@
 # Wave 723
 
 Experimental Samsung Wave 723 (GT-S7230/E, Broadcom BCM2156) emulation for
-Android, Windows, and Linux. The current milestone is firmware inspection and
-execution of the AMSS and APPS ARM reset vectors in QEMU. The first display
-milestone runs a small ARM display program that sends the firmware's startup
-logo through the emulated LCD interface. Bada boot, the stock LCD driver,
-touchscreen and storage are still in bring-up.
+Android, Windows, and Linux. QEMU boots the XXKG1 application processor and
+modem, opens the Samsung FSR volume, and reports LCD activity from the guest.
+The stock home screen is still in bring-up.
 
 ## Run
 
@@ -15,11 +13,12 @@ Download a package from a successful [Build and test run](https://github.com/j92
   and select the Wave 723 firmware ZIP. Tap **Trace reset** to execute AMSS.
 - Windows x86-64 and Linux x86-64 or ARM64. Extract the package and launch
   `wave723-ui` (`wave723-ui.exe` on Windows). Open or drop the firmware ZIP into
-  the window and choose **Boot logo** to see QEMU's LCD capture.
+  the window and choose **Boot firmware** to run bada. **Preview logo** runs a
+  small guest display program using the startup bitmap in the RC2 resource.
 
 ```sh
 ./wave723 inspect /path/to/S7230EXXKG1_OXGKG2.zip
-./wave723 boot /path/to/S7230EXXKG1_OXGKG2.zip wave723-screen.png
+./wave723 boot /path/to/S7230EXXKG1_OXGKG2.zip wave723-screen.png 2000000000
 ./wave723 boot-logo /path/to/S7230EXXKG1_OXGKG2.zip wave723-logo.png
 ./wave723 trace /path/to/S7230EXXKG1_OXGKG2.zip 100000
 ./wave723 trace-apps /path/to/S7230EXXKG1_OXGKG2.zip 100000
@@ -30,6 +29,12 @@ provisional SRAM window for the stack used by the XXKG1 startup code. Diagnostic
 APPS runs use the RAM range described by the firmware. The `boot` command
 runs stock APPS with these diagnostics and saves a capture when APPS has
 painted a visible frame.
+
+The XXKG1 update omits the two modem parameter images. The loader accepts
+`sysparm_ind.img` and `sysparm_dep.img` inside the ZIP or in
+`S7230EXXKG1_OXGKG2/BOOTFILES/` beside it. Both files need their original
+Samsung footers. The hosted stock run used the S7230E XEKF1 service-package
+pair, with matching parameter versions 26 and 1. [Service-package inventory](https://archive.org/details/gt-s7230e)
 
 Use your own firmware archive. Firmware is opened read-only. On Android the
 selected archive is copied to app-private cache for random access.
@@ -67,5 +72,12 @@ packages** enabled to build those platforms. This project is distributed under G
 [QEMU from LightTouch's Android-capable fork](https://github.com/blake-lucas/qemu-ios/commit/1955aea6930119c34b968c0596dc3cd72d67e839),
 [miniz](https://github.com/richgel999/miniz/commit/293d4db1b7d0ffee9756d035b9ac6f7431ef8492),
 and [SDL](https://github.com/libsdl-org/SDL/commit/badbf8da4ee72b3ef599c721ffc9899e8d7c8d90).
+
+The manual stock workflow runs a tested Linux ARM64 package on a GitHub runner.
+It captures the terminal and saves a separate guest LCD image if the panel
+wakes, receives pixels and turns on. Its input is a GPG-encrypted tar containing
+the ZIP and its two `BOOTFILES` siblings as listed above. `WAVE723_MEDIA_URL`
+holds a time-limited GitHub release-asset download URL and `WAVE723_MEDIA_KEY`
+holds the passphrase. [Stock firmware boot](.github/workflows/stock.yml)
 
 See [hardware notes](docs/hardware.md) for firmware observations and references.
