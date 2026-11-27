@@ -39,6 +39,40 @@ std::uint32_t word(const std::uint8_t* bytes) {
            (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
 }
 
+constexpr std::uint32_t xxkg1CscResource = 0x07d00000;
+
+void writeXxkg1CscResource(std::ostream& flash, const std::vector<std::uint8_t>& csc) {
+    constexpr std::size_t descriptor = 512, footer = 1024;
+    const auto field = [&](std::size_t offset) { return word(csc.data() + offset); };
+    if (csc.size() < descriptor + 4 + footer || field(0) != 0xcafebabe ||
+        field(4) != csc.size() - 4 - footer || field(field(4)) != 0x65666163 ||
+        field(field(4) + 4) != 0xabcdabcd || field(20) != descriptor) {
+        throw std::runtime_error("Invalid XXKG1 CSC header.");
+    }
+    const auto count = field(16), first = field(8), end = field(4);
+    if (first > end || first < descriptor || count > first / descriptor - 1) {
+        throw std::runtime_error("Invalid XXKG1 CSC table extent.");
+    }
+    bool written = false;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto entry = (i + 1) * descriptor;
+        const auto start = field(entry + 12), length = field(entry + 24);
+        if (field(entry) != 0xcafebabe || start < first || start > end || length > end - start) {
+            throw std::runtime_error("Invalid XXKG1 CSC component extent.");
+        }
+        if (field(entry + 20) != xxkg1CscResource) continue;
+        if (written || length < footer + 4 || length - footer > 0x08a00000 - xxkg1CscResource ||
+            field(start) != 0x00444d51 ||
+            field(start + length - footer) != 0xabcdabcd ||
+            field(start + length - footer + 4) != xxkg1CscResource) {
+            throw std::runtime_error("Invalid XXKG1 CSC.rcs resource.");
+        }
+        writeFlashPayload(flash, xxkg1CscResource, csc.data() + start, length - footer);
+        written = true;
+    }
+    if (!written) throw std::runtime_error("The XXKG1 CSC has no CSC.rcs resource.");
+}
+
 std::string_view basename(std::string_view name) {
     const auto slash = name.find_last_of("/\\");
     return slash == name.npos ? name : name.substr(slash + 1);
@@ -125,19 +159,22 @@ public:
         return extract(info, "Could not decompress and verify amss.bin");
     }
 
-    mz_zip_archive_file_stat find(std::string_view part, const std::string& name) {
-        mz_zip_archive_file_stat result{};
-        bool found = false;
+    std::optional<mz_zip_archive_file_stat> lookup(std::string_view part, const std::string& name) {
+        std::optional<mz_zip_archive_file_stat> result;
         const auto entries = count();
         for (mz_uint index = 0; index < entries; ++index) {
             const auto entry = stat(index);
             if (entry.m_is_directory || role(entry.m_filename) != part) continue;
-            if (found) throw std::runtime_error("The ZIP contains multiple " + name + " files.");
+            if (result) throw std::runtime_error("The ZIP contains multiple " + name + " files.");
             result = entry;
-            found = true;
         }
-        if (!found) throw std::runtime_error("The ZIP does not contain " + name + ".");
         return result;
+    }
+
+    mz_zip_archive_file_stat find(std::string_view part, const std::string& name) {
+        const auto result = lookup(part, name);
+        if (!result) throw std::runtime_error("The ZIP does not contain " + name + ".");
+        return *result;
     }
 
     std::vector<std::uint8_t> bootLogo() {
@@ -259,7 +296,7 @@ private:
         writeFlashPayload(flash, 0x00a00000, apps.data(), apps.size());
         struct Component { const char* role; std::uint32_t start, end; };
         constexpr std::array<Component, 4> components{{
-            {"AMSS", 0x00200000, 0x00a00000}, {"RSRC1", 0x04100000, 0x08a00000},
+            {"AMSS", 0x00200000, 0x00a00000}, {"RSRC1", 0x04100000, xxkg1CscResource},
             {"FOTA", 0x08a00000, 0x08d00000}, {"RSRC2", 0x1eb00000, 0x1ef00000},
         }};
         for (const auto& part : components) {
@@ -284,6 +321,10 @@ private:
                 modem.write(reinterpret_cast<const char*>(bytes.data()), size);
                 modem.close();
             }
+        }
+        if (const auto csc = lookup("CSC", "CSC")) {
+            if (csc->m_uncomp_size > 64 * 1024 * 1024) throw std::runtime_error("CSC is too large.");
+            writeXxkg1CscResource(flash, extract(*csc, "Could not verify the CSC"));
         }
         writeSysparms(path.parent_path(), flash);
         flash.close();

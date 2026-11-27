@@ -99,6 +99,7 @@ struct Wave723State {
     Wave723SurveyReg survey_regs[48];
     unsigned survey_count;
     bool reported_ramctrl;
+    bool reported_modem_abort;
     bool reported;
 };
 
@@ -198,7 +199,25 @@ static Wave723SurveyReg *wave723_survey_register(Wave723State *s, hwaddr address
     return reg;
 }
 
-static uint64_t wave723_read(void *opaque, hwaddr address, unsigned size)
+static MemTxResult wave723_bus_error(Wave723State *s, hwaddr address, unsigned size,
+                                     const uint64_t *value)
+{
+    if (s->modem.cpu && current_cpu == CPU(s->modem.cpu) && !s->survey) {
+        if (!s->reported_modem_abort) {
+            printf("AMSS external abort: unmapped %s at 0x%08" PRIx64
+                   " (%u bytes), PC 0x%08x\n", value ? "write" : "read",
+                   (uint64_t)address, size, s->modem.cpu->env.regs[15]);
+            s->reported_modem_abort = true;
+        }
+        /* The ARM926 takes its data abort vector. APPS has a separate bus master. */
+        return MEMTX_DECODE_ERROR;
+    }
+    wave723_finish(s, value ? "unmapped write" : "unmapped read", address, size, value);
+    return MEMTX_OK;
+}
+
+static MemTxResult wave723_read(void *opaque, hwaddr address, uint64_t *data,
+                                unsigned size, MemTxAttrs attrs)
 {
     Wave723State *s = opaque;
     Wave723SurveyReg *reg = wave723_survey_register(s, address);
@@ -209,14 +228,15 @@ static uint64_t wave723_read(void *opaque, hwaddr address, unsigned size)
                    (uint64_t)address, size, current_cpu ? ARM_CPU(current_cpu)->env.regs[15] : 0);
             reg->read_seen = true;
         }
-        return reg->value;
+        *data = reg->value;
+        return MEMTX_OK;
     }
-    wave723_finish(s, "unmapped read", address, size, NULL);
-    return 0;
+    *data = 0;
+    return wave723_bus_error(s, address, size, NULL);
 }
 
-static void wave723_write(void *opaque, hwaddr address, uint64_t value,
-                          unsigned size)
+static MemTxResult wave723_write(void *opaque, hwaddr address, uint64_t value,
+                                 unsigned size, MemTxAttrs attrs)
 {
     Wave723State *s = opaque;
     Wave723SurveyReg *reg = wave723_survey_register(s, address);
@@ -229,9 +249,9 @@ static void wave723_write(void *opaque, hwaddr address, uint64_t value,
             reg->write_seen = true;
         }
         reg->value = value;
-        return;
+        return MEMTX_OK;
     }
-    wave723_finish(s, "unmapped write", address, size, &value);
+    return wave723_bus_error(s, address, size, &value);
 }
 
 static uint64_t wave723_ramctrl_read(void *opaque, hwaddr address, unsigned size)
@@ -364,8 +384,8 @@ static const MemoryRegionOps wave723_power_up_ops = {
 };
 
 static const MemoryRegionOps wave723_unmapped_ops = {
-    .read = wave723_read,
-    .write = wave723_write,
+    .read_with_attrs = wave723_read,
+    .write_with_attrs = wave723_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
     .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
@@ -391,6 +411,7 @@ static void wave723_reset(void *opaque)
     }
     s->reported = false;
     s->reported_ramctrl = false;
+    s->reported_modem_abort = false;
     s->clock_mode = 0;
     s->dsp_clock = 0;
     s->arm9_sleep = 0;

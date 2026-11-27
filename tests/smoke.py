@@ -224,6 +224,25 @@ class Smoke(unittest.TestCase):
                               self.execute("boot", str(png), status=1))
         self.assertFalse(png.exists())
 
+    def test_nested_csc_flash_resource(self):
+        start = 0x07d00000
+        data = self.component(start, b"QMD\0" + bytes(32))
+        header = bytearray(0x1000)
+        end = len(header) + len(data)
+        struct.pack_into("<7I", header, 0, 0xcafebabe, end, 0x1000, 0x1001, 1, 512, 4096)
+        struct.pack_into("<7I", header, 512, 0xcafebabe, 0, 0, 0x1000, 0, start, len(data))
+        csc = self.component(0xc0000000, header + data + b"cafe")
+        files = self.factory_components()
+        png = self.path.with_suffix(".png")
+        self.write({**files, "firmware.csc": csc})
+        self.assertIn("Stock APPS did not produce a visible LCD frame",
+                      self.execute("boot", str(png), "128", status=1))
+        for offset, error in [(512 + 24, "component extent"), (len(header) + 36 + 4, "CSC.rcs resource")]:
+            broken = bytearray(csc)
+            struct.pack_into("<I", broken, offset, 0xffffffff)
+            self.write({**files, "firmware.csc": broken})
+            self.assertIn(error, self.execute("boot", str(png), "128", status=1))
+
     def test_modem_starts_from_mailbox_and_has_private_tcm(self):
         # (register, value) emits an ARM literal load. Other entries are opcodes.
         def program(instructions):
@@ -241,10 +260,15 @@ class Smoke(unittest.TestCase):
             (3, 0xffff0020), (4, 0x80300000), 0xE5834000,  # Publish modem reset vector
             (3, 0x08810038), (4, 6), 0xE5834000,           # Release modem
             (3, 0x800b4000), 0xE5935000, 0xE3550022, 0x1AFFFFFC,  # Poll shared RAM
-            0xE5916000, (3, 0x0bfffffc), 0xE5937000,     # Check local DTCM and stop
+            0xE5938004, 0xE5916000, (3, 0x0bfffffc), 0xE5937000,
         ]))
         cp.write_bytes(program([
             (0, 0x08700019), 0xEE090F11, (1, 0x08700000), (2, 0x22), 0xE5812000,
+            (7, 0x1d), 0xEE097F31, (6, 0x10),             # Low vectors in AMSS ITCM
+            (7, 0xE3A0805A), 0xE5867000,                   # Data abort handler sets r8
+            (7, 0xE25EF004), 0xE5867004,                   # subs pc, lr, #4 skips the fault
+            (3, 0x0bfffff8), 0xE5937000,                   # Raise a real external data abort
+            (3, 0x800b4000), 0xE5838004,                   # Publish the handler's marker
             (3, 0x800b4000), 0xE5812000, 0xE5914000, 0xE5834000, 0xEAFFFFFE,
         ]))
         engine = CLI.with_name("qemu-system-arm.exe" if os.name == "nt" else "qemu-system-arm")
@@ -260,6 +284,8 @@ class Smoke(unittest.TestCase):
         self.assertIn("unmapped read at 0x0bfffffc", result.stdout)
         self.assertIn("r5=0x00000022", result.stdout)
         self.assertIn("r6=0x00000011", result.stdout)
+        self.assertIn("AMSS external abort: unmapped read at 0x0bfffff8", result.stdout)
+        self.assertIn("r8=0x0000005a", result.stdout)
 
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})
