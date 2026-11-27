@@ -15,7 +15,7 @@ binary=qemu-system-arm
 
 cp "$project_root/qemu/wave723.c" "$project_root/qemu/wave723_lcd.c" \
    "$project_root/qemu/wave723_lcd.h" "$project_root/qemu/wave723_onenand.c" \
-   "$project_root/qemu/wave723_onenand.h" "$source_dir/hw/arm/"
+   "$project_root/qemu/wave723_onenand.h" "$project_root/qemu/wave723_nand_geometry.h" "$source_dir/hw/arm/"
 if ! grep -q 'config WAVE723' "$source_dir/hw/arm/Kconfig"; then
     cat >> "$source_dir/hw/arm/Kconfig" <<'KCONFIG'
 

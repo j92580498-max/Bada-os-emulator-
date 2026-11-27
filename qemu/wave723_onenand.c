@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Samsung OneNAND read path, using the Linux register map and Totoro geometry. */
+/* Samsung 4 KiB SLC OneNAND as accessed by the Wave 723 FSR driver. */
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
@@ -13,7 +13,6 @@
 #define ONENAND_DATARAM 0x400
 #define ONENAND_SPARERAM 0x10020
 #define ONENAND_REG_BASE 0x1e000
-#define ONENAND_PAGES_PER_BLOCK 64
 
 /* Word offsets from the start of the register window. */
 enum {
@@ -32,6 +31,9 @@ enum {
 #define INT_ERASE 0x0020
 #define INT_RESET 0x0010
 #define STATUS_ERROR 0x0400
+#define WP_TIGHT 1
+#define WP_LOCKED 2
+#define WP_UNLOCKED 4
 
 void wave723_onenand_reset(Wave723OneNand *nand)
 {
@@ -46,40 +48,108 @@ void wave723_onenand_reset(Wave723OneNand *nand)
     nand->regs[DATA_BUFFER_SIZE] = WAVE723_NAND_PAGE_SIZE;
     nand->regs[BOOT_BUFFER_SIZE] = sizeof(nand->boot);
     nand->regs[NUM_BUFFERS] = 1;
-    nand->regs[TECHNOLOGY] = 1;  /* MLC */
+    nand->regs[TECHNOLOGY] = 0;  /* SLC */
     nand->regs[INTERRUPT] = INT_MASTER | INT_RESET;
-    nand->regs[WRITE_PROTECT] = 4;
+    memset(nand->protection, WP_UNLOCKED, sizeof(nand->protection));
 }
 
-static void onenand_load(Wave723OneNand *nand, bool read_main)
+static unsigned onenand_block(Wave723OneNand *nand)
 {
-    unsigned buffer = (nand->regs[START_BUFFER] >> 10) & 1;
-    unsigned block = nand->regs[START_ADDRESS1] & 0x7ff;
-    unsigned page = (nand->regs[START_ADDRESS8] >> 2) & 0x3f;
-    int64_t offset = (block * ONENAND_PAGES_PER_BLOCK + page) *
-                     WAVE723_NAND_PAGE_SIZE;
+    return nand->regs[START_ADDRESS1] & (WAVE723_NAND_BLOCKS - 1);
+}
 
-    memset(nand->spare[buffer], 0xff, WAVE723_NAND_SPARE_SIZE);
-    if (!read_main) {
-        return;
+static unsigned onenand_page(Wave723OneNand *nand)
+{
+    unsigned page = (nand->regs[START_ADDRESS8] >> 2) & (WAVE723_NAND_PAGES_PER_BLOCK - 1);
+    return onenand_block(nand) * WAVE723_NAND_PAGES_PER_BLOCK + page;
+}
+
+static bool onenand_load(Wave723OneNand *nand, bool read_main)
+{
+    unsigned page = onenand_page(nand);
+    int64_t offset = (int64_t)page * WAVE723_NAND_PAGE_SIZE;
+    memset(nand->spare, 0xff, sizeof(nand->spare));
+    if (read_main) {
+        memset(nand->data, 0xff, sizeof(nand->data));
     }
-    memset(nand->data[buffer], 0xff, WAVE723_NAND_PAGE_SIZE);
-    if (nand->media && !nand->otp && offset < nand->media_size &&
-        blk_pread(nand->media, offset, WAVE723_NAND_PAGE_SIZE,
-                  nand->data[buffer], 0) < 0) {
-        nand->regs[CTRL_STATUS] = STATUS_ERROR;
+    if (nand->otp) {
+        return true;
     }
+    if (nand->factory) {
+        uint8_t record[WAVE723_NAND_RECORD_SIZE];
+        if (blk_pread(nand->factory, (int64_t)page * sizeof(record),
+                      sizeof(record), record, 0) < 0) {
+            return false;
+        }
+        /* Holes in a private factory image represent erased NAND. */
+        if (read_main) {
+            for (unsigned i = 0; i < sizeof(nand->data); ++i) {
+                nand->data[i] = ~record[i];
+            }
+        }
+        for (unsigned i = 0; i < sizeof(nand->spare); ++i) {
+            nand->spare[i] = ~record[sizeof(nand->data) + i];
+        }
+    } else if (offset < nand->media_size) {
+        if (read_main && blk_pread(nand->media, offset, sizeof(nand->data),
+                                   nand->data, 0) < 0) {
+            return false;
+        }
+        if (nand->oob && blk_pread(nand->oob, (int64_t)page * sizeof(nand->spare),
+                                   sizeof(nand->spare), nand->spare, 0) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool onenand_writable(Wave723OneNand *nand)
+{
+    return nand->factory && blk_is_writable(nand->factory) && !nand->otp &&
+           nand->protection[onenand_block(nand)] == WP_UNLOCKED;
+}
+
+static bool onenand_program(Wave723OneNand *nand, bool main)
+{
+    uint8_t record[WAVE723_NAND_RECORD_SIZE];
+    int64_t offset = (int64_t)onenand_page(nand) * sizeof(record);
+
+    if (!onenand_writable(nand) ||
+        blk_pread(nand->factory, offset, sizeof(record), record, 0) < 0) {
+        return false;
+    }
+    /* Programming can only clear bits in the decoded main and spare areas. */
+    if (main) {
+        for (unsigned i = 0; i < sizeof(nand->data); ++i) {
+            record[i] |= (uint8_t)~nand->data[i];
+        }
+    }
+    for (unsigned i = 0; i < sizeof(nand->spare); ++i) {
+        record[sizeof(nand->data) + i] |= (uint8_t)~nand->spare[i];
+    }
+    return blk_pwrite(nand->factory, offset, sizeof(record), record, 0) == 0;
+}
+
+static bool onenand_erase(Wave723OneNand *nand)
+{
+    const int64_t bytes = WAVE723_NAND_PAGES_PER_BLOCK * WAVE723_NAND_RECORD_SIZE;
+    return onenand_writable(nand) &&
+           blk_pwrite_zeroes(nand->factory, onenand_block(nand) * bytes,
+                             bytes, BDRV_REQ_MAY_UNMAP) == 0;
 }
 
 static void onenand_command(Wave723OneNand *nand, uint16_t command)
 {
     uint16_t interrupt = INT_MASTER;
+    unsigned lock_block = nand->regs[START_BLOCK] & (WAVE723_NAND_BLOCKS - 1);
+    bool ok = true;
 
     nand->regs[CTRL_STATUS] = 0;
     switch (command) {
     case 0x00:  /* Page read */
+    case 0x03:  /* Superload */
     case 0x13:  /* Spare read */
-        onenand_load(nand, command == 0x00);
+        ok = onenand_load(nand, command != 0x13);
         interrupt |= INT_READ;
         break;
     case 0x65:  /* OTP access */
@@ -87,33 +157,40 @@ static void onenand_command(Wave723OneNand *nand, uint16_t command)
         interrupt |= INT_RESET;
         break;
     case 0xf0:  /* Reset */
+    case 0xf3:  /* Hot reset */
         wave723_onenand_reset(nand);
         return;
     case 0x23:  /* Unlock */
-    case 0x27:  /* Unlock all */
-        nand->regs[WRITE_PROTECT] = 4;
-        break;
     case 0x2a:  /* Lock */
     case 0x2c:  /* Lock tight */
-        nand->regs[WRITE_PROTECT] = command == 0x2c ? 2 : 1;
+        if (nand->protection[lock_block] != WP_TIGHT) {
+            nand->protection[lock_block] = command == 0x23 ? WP_UNLOCKED :
+                                           command == 0x2a ? WP_LOCKED : WP_TIGHT;
+        }
+        break;
+    case 0x27:  /* Unlock all */
+        for (unsigned i = 0; i < WAVE723_NAND_BLOCKS; ++i) {
+            if (nand->protection[i] != WP_TIGHT) {
+                nand->protection[i] = WP_UNLOCKED;
+            }
+        }
         break;
     case 0x80:  /* Program */
     case 0x1a:  /* Program spare */
-    case 0x7d:  /* Two-plane program */
     case 0x7f:  /* Cache program */
-        nand->regs[CTRL_STATUS] = STATUS_ERROR;
+        ok = onenand_program(nand, command != 0x1a);
         interrupt |= INT_PROGRAM;
         break;
     case 0x94:  /* Erase */
-    case 0x95:  /* Multiblock erase */
-        nand->regs[CTRL_STATUS] = STATUS_ERROR;
+        ok = onenand_erase(nand);
         interrupt |= INT_ERASE;
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "wave723 OneNAND command %#x\n", command);
-        nand->regs[CTRL_STATUS] = STATUS_ERROR;
+        ok = false;
         break;
     }
+    nand->regs[CTRL_STATUS] = ok ? 0 : STATUS_ERROR;
     nand->regs[INTERRUPT] = interrupt;
 }
 
@@ -139,8 +216,10 @@ static uint64_t onenand_read(void *opaque, hwaddr offset, unsigned size)
     for (unsigned i = 0; i < size; ++i, ++offset) {
         uint8_t byte = 0xff;
         if (offset >= ONENAND_REG_BASE) {
-            byte = nand->regs[(offset - ONENAND_REG_BASE) / 2] >>
-                   (8 * (offset & 1));
+            unsigned reg = (offset - ONENAND_REG_BASE) / 2;
+            uint16_t val = reg == WRITE_PROTECT ? nand->protection[onenand_block(nand)] :
+                                                  nand->regs[reg];
+            byte = val >> (8 * (offset & 1));
         } else {
             uint8_t *buffer = onenand_buffer(nand, offset);
             if (buffer) {
@@ -205,6 +284,13 @@ void wave723_onenand_init(Wave723OneNand *nand, Object *owner,
                          MemoryRegion *memory)
 {
     nand->media = blk_by_name("wave723-flash");
+    nand->oob = blk_by_name("wave723-spare");
+    nand->factory = blk_by_name("wave723-factory");
+    if (nand->factory && (nand->media || nand->oob ||
+        blk_getlength(nand->factory) != (int64_t)WAVE723_NAND_PAGES * WAVE723_NAND_RECORD_SIZE)) {
+        error_report("Invalid or conflicting Wave 723 factory flash image.");
+        exit(1);
+    }
     if (nand->media) {
         nand->media_size = blk_getlength(nand->media);
         if (nand->media_size <= 0 || nand->media_size > 512 * MiB ||
@@ -212,6 +298,11 @@ void wave723_onenand_init(Wave723OneNand *nand, Object *owner,
             error_report("Wave 723 OneNAND requires a page-aligned image of up to 512 MiB.");
             exit(1);
         }
+    }
+    if (nand->oob && (!nand->media || blk_getlength(nand->oob) !=
+            nand->media_size / WAVE723_NAND_PAGE_SIZE * WAVE723_NAND_SPARE_SIZE)) {
+        error_report("Wave 723 spare image requires 128 bytes per main-area page.");
+        exit(1);
     }
     memory_region_init_io(&nand->region, owner, &onenand_ops,
                           nand, "wave723.onenand", ONENAND_WINDOW);

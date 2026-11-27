@@ -3,18 +3,19 @@
 #define WAVE723_ONENAND_H
 
 #include "system/memory.h"
-
-#define WAVE723_NAND_PAGE_SIZE 4096
-#define WAVE723_NAND_SPARE_SIZE 256
+#include "wave723_nand_geometry.h"
 
 typedef struct Wave723OneNand {
     MemoryRegion region;
     BlockBackend *media;
+    BlockBackend *oob;
+    BlockBackend *factory;
     int64_t media_size;
     uint16_t regs[0x1000];
     uint8_t boot[512];
-    uint8_t data[2][WAVE723_NAND_PAGE_SIZE];
-    uint8_t spare[2][WAVE723_NAND_SPARE_SIZE];
+    uint8_t data[WAVE723_NAND_PAGE_SIZE];
+    uint8_t spare[WAVE723_NAND_SPARE_SIZE];
+    uint8_t protection[WAVE723_NAND_BLOCKS];
     bool otp;
 } Wave723OneNand;
 
