@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Samsung Wave 723 BCM2156 reset probes. */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/error-report.h"
 #include "qemu/host-utils.h"
 #include "qemu/main-loop.h"
@@ -16,6 +17,7 @@
 #include "system/runstate.h"
 #include "target/arm/cpregs.h"
 #include "target/arm/cpu.h"
+#include "target/arm/arm-powerctl.h"
 #include "wave723_lcd.h"
 #include "wave723_onenand.h"
 
@@ -31,6 +33,8 @@
 #define SYSCFG_IOCR3_RESERVED 0x82054008
 #define SYSCFG_RAMCTRL 0x08880048
 #define CLKPWR_ARMAHB_MODE 0x08140000
+#define CLKPWR_DSP_MODE 0x0814000c
+#define SYSCFG_POWER_UP_MODE 0x08880018
 #define AMSS_STACK_SRAM_BASE 0x08708000
 #define APPS_HIGH_SRAM 0xffff0000
 #define APPS_HIGH_SRAM_SIZE (32 * KiB)
@@ -43,6 +47,13 @@ typedef struct Wave723Tcm {
     uint32_t region;
 } Wave723Tcm;
 
+typedef struct Wave723Core {
+    ARMCPU *cpu;
+    MemoryRegion view;
+    MemoryRegion system_alias;
+    Wave723Tcm tcm[2];
+} Wave723Core;
+
 typedef struct Wave723SurveyReg {
     hwaddr address;
     uint64_t value;
@@ -54,7 +65,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(Wave723State, WAVE723_MACHINE)
 
 struct Wave723State {
     MachineState parent_obj;
-    ARMCPU *cpu;
+    Wave723Core primary;
+    Wave723Core modem;
     MemoryRegion unmapped;
     MemoryRegion gpt0_count;
     int64_t gpt0_epoch;
@@ -64,14 +76,18 @@ struct Wave723State {
     MemoryRegion ramctrl;
     MemoryRegion armahb_mode;
     uint32_t clock_mode;
+    MemoryRegion dsp_clock_reg;
+    uint32_t dsp_clock;
+    MemoryRegion power_up_reg;
+    uint32_t power_up_mode;
     MemoryRegion arm9_sleep_reg;
     uint32_t arm9_sleep;
     MemoryRegion diagnostic_stack;
+    MemoryRegion modem_code_sram;
     MemoryRegion high_sram;
     MemoryRegion diagnostic_startup_data;
     Wave723Lcd lcd;
     Wave723OneNand nand;
-    Wave723Tcm tcm[2];
     QEMUTimer *deadline;
     int64_t limit;
     uint32_t reset_vector;
@@ -84,19 +100,22 @@ struct Wave723State {
     bool reported;
 };
 
-static uint64_t wave723_tcm_read(CPUARMState *env, const ARMCPRegInfo *reg)
+static Wave723Tcm *wave723_tcm(CPUARMState *env, unsigned bank)
 {
     Wave723State *s = WAVE723_MACHINE(qdev_get_machine());
+    Wave723Core *core = env == &s->primary.cpu->env ? &s->primary : &s->modem;
+    return &core->tcm[bank];
+}
 
-    return s->tcm[reg->opc2].region;
+static uint64_t wave723_tcm_read(CPUARMState *env, const ARMCPRegInfo *reg)
+{
+    return wave723_tcm(env, reg->opc2)->region;
 }
 
 static void wave723_tcm_write(CPUARMState *env, const ARMCPRegInfo *reg,
                               uint64_t value)
 {
-    Wave723State *s = WAVE723_MACHINE(qdev_get_machine());
-    unsigned bank = reg->opc2;
-    Wave723Tcm *tcm = &s->tcm[bank];
+    Wave723Tcm *tcm = wave723_tcm(env, reg->opc2);
     uint32_t size = memory_region_size(&tcm->memory);
     uint32_t base = (uint32_t)value & ~(size - 1);
     bool enabled = value & 1;
@@ -121,7 +140,8 @@ static const ARMCPRegInfo wave723_tcm_regs[] = {
 static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
                            unsigned size, const uint64_t *value)
 {
-    CPUARMState *env = &s->cpu->env;
+    ARMCPU *active = current_cpu ? ARM_CPU(current_cpu) : s->primary.cpu;
+    CPUARMState *env = &active->env;
 
     if (s->reported) {
         return;
@@ -136,6 +156,10 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
     }
     if (value) {
         printf("\nWrite value 0x%08" PRIx64, *value);
+    }
+    if (s->modem.cpu) {
+        printf("\nAPPS PC 0x%08x  AMSS PC 0x%08x", s->primary.cpu->env.regs[15],
+               s->modem.cpu->env.regs[15]);
     }
     printf("\nPC 0x%08" PRIx32 "  CPSR 0x%08" PRIx32 "\n",
            env->regs[15], cpsr_read(env));
@@ -173,7 +197,7 @@ static uint64_t wave723_read(void *opaque, hwaddr address, unsigned size)
     if (reg) {
         if (!reg->read_seen) {
             printf("Survey read 0x%08" PRIx64 " (%u) PC 0x%08" PRIx32 "\n",
-                   (uint64_t)address, size, s->cpu->env.regs[15]);
+                   (uint64_t)address, size, current_cpu ? ARM_CPU(current_cpu)->env.regs[15] : 0);
             reg->read_seen = true;
         }
         return reg->value;
@@ -192,7 +216,7 @@ static void wave723_write(void *opaque, hwaddr address, uint64_t value,
         if (!reg->write_seen) {
             printf("Survey write 0x%08" PRIx64 " (%u) = 0x%08" PRIx64
                    " PC 0x%08" PRIx32 "\n", (uint64_t)address, size, value,
-                   s->cpu->env.regs[15]);
+                   current_cpu ? ARM_CPU(current_cpu)->env.regs[15] : 0);
             reg->write_seen = true;
         }
         reg->value = value;
@@ -295,6 +319,41 @@ static const MemoryRegionOps wave723_reg32_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+static uint64_t wave723_sleep_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return ((Wave723State *)opaque)->arm9_sleep;
+}
+
+static void wave723_sleep_write(void *opaque, hwaddr offset, uint64_t value,
+                                unsigned size)
+{
+    Wave723State *s = opaque;
+    bool release = s->arm9_sleep != 6 && value == 6;
+    s->arm9_sleep = value;
+    if (s->modem.cpu && release) {
+        uint8_t *sram = memory_region_get_ram_ptr(&s->high_sram);
+        uint32_t entry = ldl_le_p(sram + 0x20);
+        if (arm_set_cpu_on(s->modem.cpu->mp_affinity, entry, 0, 1, false) ==
+            QEMU_ARM_POWERCTL_RET_SUCCESS && s->diagnostic) {
+            printf("AMSS released at 0x%08x\n", entry);
+        }
+    }
+}
+
+static const MemoryRegionOps wave723_sleep_ops = {
+    .read = wave723_sleep_read, .write = wave723_sleep_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static const MemoryRegionOps wave723_power_up_ops = {
+    .read = wave723_reg32_read, .write = wave723_reg32_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 1 },
+    .impl = { .min_access_size = 1, .max_access_size = 1 },
+};
+
 static const MemoryRegionOps wave723_unmapped_ops = {
     .read = wave723_read,
     .write = wave723_write,
@@ -311,13 +370,20 @@ static void wave723_timeout(void *opaque)
 static void wave723_reset(void *opaque)
 {
     Wave723State *s = opaque;
-    for (unsigned i = 0; i < ARRAY_SIZE(s->tcm); ++i) {
-        s->tcm[i].region = s->tcm[i].size_bits;
-        memory_region_set_enabled(&s->tcm[i].memory, false);
+    Wave723Core *cores[] = { &s->primary, &s->modem };
+    for (unsigned n = 0; n < ARRAY_SIZE(cores); ++n) {
+        if (cores[n]->cpu) {
+            for (unsigned i = 0; i < ARRAY_SIZE(cores[n]->tcm); ++i) {
+                Wave723Tcm *tcm = &cores[n]->tcm[i];
+                tcm->region = tcm->size_bits;
+                memory_region_set_enabled(&tcm->memory, false);
+            }
+        }
     }
     s->reported = false;
     s->reported_ramctrl = false;
     s->clock_mode = 0;
+    s->dsp_clock = 0;
     s->arm9_sleep = 0;
     s->pin_config = 0;
     s->gpt0_reload = UINT32_MAX;
@@ -326,13 +392,42 @@ static void wave723_reset(void *opaque)
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
     wave723_onenand_reset(&s->nand);
-    cpu_set_pc(CPU(s->cpu), s->reset_vector);
+    cpu_set_pc(CPU(s->primary.cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
+}
+
+static void wave723_init_core(Wave723Core *core, MachineState *machine,
+                              const char *type, bool apps, bool powered_off)
+{
+    Object *cpu = object_new(type);
+    const char *name = apps ? "wave723.apps" : "wave723.amss";
+    memory_region_init(&core->view, OBJECT(machine), name, UINT64_C(1) << 32);
+    memory_region_init_alias(&core->system_alias, OBJECT(machine),
+                             apps ? "apps.system" : "amss.system",
+                             get_system_memory(), 0, UINT64_C(1) << 32);
+    memory_region_add_subregion(&core->view, 0, &core->system_alias);
+    for (unsigned i = 0; i < ARRAY_SIZE(core->tcm); ++i) {
+        Wave723Tcm *tcm = &core->tcm[i];
+        unsigned size_code = apps ? 5 : 6 + i;
+        g_autofree char *id = g_strdup_printf("%s.%s", name, i ? "itcm" : "dtcm");
+        tcm->size_bits = size_code << 2;
+        memory_region_init_ram_flags_nomigrate(&tcm->memory, OBJECT(machine),
+                                               id, 512U << size_code, 0, &error_fatal);
+        memory_region_set_enabled(&tcm->memory, false);
+        memory_region_add_subregion_overlap(&core->view, 0, &tcm->memory, 2 + i);
+    }
+    core->cpu = ARM_CPU(cpu);
+    object_property_set_link(cpu, "memory", OBJECT(&core->view), &error_fatal);
+    if (object_property_find(cpu, "has_el3")) {
+        object_property_set_bool(cpu, "has_el3", false, &error_fatal);
+    }
+    object_property_set_bool(cpu, "start-powered-off", powered_off, &error_fatal);
+    define_arm_cp_regs(core->cpu, wave723_tcm_regs);
+    qdev_realize(DEVICE(cpu), NULL, &error_fatal);
 }
 
 static void wave723_init(MachineState *machine)
 {
-    Object *cpu = object_new(machine->cpu_type);
     MemoryRegion *memory = get_system_memory();
     Wave723State *s = WAVE723_MACHINE(machine);
     const char *limit = machine->kernel_cmdline;
@@ -368,10 +463,16 @@ static void wave723_init(MachineState *machine)
         error_report("Wave 723 requires a reset image supplied with -kernel and a supported RAM size.");
         exit(1);
     }
-    object_property_set_bool(cpu, "has_el3", false, &error_fatal);
-    s->cpu = ARM_CPU(cpu);
-    define_arm_cp_regs(s->cpu, wave723_tcm_regs);
-    qdev_realize(DEVICE(cpu), NULL, &error_fatal);
+    bool dual = machine->initrd_filename != NULL;
+    if (machine->smp.cpus != (dual ? 2 : 1) || (dual && s->reset_vector != APPS_BASE)) {
+        error_report("Dual-core Wave 723 boots require APPS, -smp 2 and an AMSS -initrd.");
+        exit(1);
+    }
+    wave723_init_core(&s->primary, machine, machine->cpu_type,
+                      s->reset_vector == APPS_BASE, false);
+    if (dual) {
+        wave723_init_core(&s->modem, machine, ARM_CPU_TYPE_NAME("arm926"), false, true);
+    }
     memory_region_init_io(&s->unmapped, OBJECT(machine), &wave723_unmapped_ops,
                           s, "wave723-unmapped", UINT64_C(1) << 32);
     memory_region_add_subregion_overlap(memory, 0, &s->unmapped, -1);
@@ -388,17 +489,28 @@ static void wave723_init(MachineState *machine)
     memory_region_init_io(&s->armahb_mode, OBJECT(machine), &wave723_reg32_ops,
                           &s->clock_mode, "wave723.clkpwr-armahb-mode", 4);
     memory_region_add_subregion(memory, CLKPWR_ARMAHB_MODE, &s->armahb_mode);
-    memory_region_init_io(&s->arm9_sleep_reg, OBJECT(machine), &wave723_reg32_ops,
-                          &s->arm9_sleep, "wave723.intc-arm9-sleep", 4);
+    memory_region_init_io(&s->dsp_clock_reg, OBJECT(machine), &wave723_reg32_ops,
+                          &s->dsp_clock, "wave723.dsp-clock-mode", 4);
+    memory_region_add_subregion(memory, CLKPWR_DSP_MODE, &s->dsp_clock_reg);
+    memory_region_init_io(&s->power_up_reg, OBJECT(machine), &wave723_power_up_ops,
+                          &s->power_up_mode, "wave723.power-up-mode", 1);
+    memory_region_add_subregion(memory, SYSCFG_POWER_UP_MODE, &s->power_up_reg);
+    memory_region_init_io(&s->arm9_sleep_reg, OBJECT(machine), &wave723_sleep_ops,
+                          s, "wave723.intc-arm9-sleep", 4);
     memory_region_add_subregion(memory, INTC_ARM9_SLEEP, &s->arm9_sleep_reg);
     wave723_lcd_init(&s->lcd, OBJECT(machine), memory);
     wave723_onenand_init(&s->nand, OBJECT(machine), memory);
-    if (s->diagnostic && s->reset_vector == AMSS_BASE) {
+    if ((s->diagnostic && s->reset_vector == AMSS_BASE) || dual) {
+        Wave723Core *cp = dual ? &s->modem : &s->primary;
+        /* AMSS copies 0x1af0c bytes to 0x80, across the 64 KiB ITCM boundary. */
+        memory_region_init_ram_flags_nomigrate(&s->modem_code_sram, OBJECT(machine),
+                                               "wave723.amss-code", 64 * KiB, 0, &error_fatal);
+        memory_region_add_subregion_overlap(&cp->view, 0x10000, &s->modem_code_sram, 1);
         /* The AMSS startup places its initial stack in this SRAM window. */
         memory_region_init_ram_flags_nomigrate(&s->diagnostic_stack, OBJECT(machine),
                                                "wave723.amss-stack", 32 * KiB, 0,
                                                &error_fatal);
-        memory_region_add_subregion(memory, AMSS_STACK_SRAM_BASE, &s->diagnostic_stack);
+        memory_region_add_subregion_overlap(&cp->view, AMSS_STACK_SRAM_BASE, &s->diagnostic_stack, 1);
         printf("Diagnostic: AMSS stack RAM mapped at 0x08708000 (32 KiB)\n");
     }
     if (s->reset_vector == APPS_BASE) {
@@ -419,17 +531,9 @@ static void wave723_init(MachineState *machine)
                                         &s->diagnostic_startup_data);
         }
     }
-    for (unsigned i = 0; i < ARRAY_SIZE(s->tcm); ++i) {
-        Wave723Tcm *tcm = &s->tcm[i];
-        /* The two XXKG1 reset paths program different TCM sizes. */
-        unsigned size_code = s->reset_vector == APPS_BASE ? 5 : 6 + i;
-
-        tcm->size_bits = size_code << 2;
-        memory_region_init_ram_flags_nomigrate(&tcm->memory, OBJECT(machine),
-                                               i ? "wave723.itcm" : "wave723.dtcm",
-                                               512U << size_code, 0, &error_fatal);
-        memory_region_set_enabled(&tcm->memory, false);
-        memory_region_add_subregion_overlap(memory, 0, &tcm->memory, 1 + i);
+    if (dual) {
+        load_image_targphys(machine->initrd_filename, AMSS_BASE,
+                            APPS_BASE - AMSS_BASE, &error_fatal);
     }
     load_image_targphys(machine->kernel_filename, s->reset_vector,
                         machine->ram_size - (s->reset_vector - RAM_BASE), &error_fatal);
@@ -444,7 +548,7 @@ static void wave723_class_init(ObjectClass *oc, const void *data)
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("arm1176");
     mc->default_ram_size = RAM_SIZE;
     mc->default_ram_id = "wave723.ram";
-    mc->max_cpus = 1;
+    mc->max_cpus = 2;
     mc->init = wave723_init;
 }
 

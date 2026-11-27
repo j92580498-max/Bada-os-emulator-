@@ -160,14 +160,14 @@ class Smoke(unittest.TestCase):
         self.assertFalse(image.exists())
 
     def test_xxkg1_boot_provisions_the_factory_flash(self):
-        def component(start):
+        def component(start, payload=b"test payload"):
             footer = bytearray(1024)
             struct.pack_into("<II", footer, 0, 0xABCDABCD, start)
-            return b"test payload" + footer
+            return payload + footer
 
         apps = bytearray(apps_image())
         apps[-1024 + 0x1e8:-1024 + 0x1f4] = b"S723E+XX+KG1"
-        files = {"apps_compressed.bin": apps, "amss.bin": component(0x00200000),
+        files = {"apps_compressed.bin": apps, "amss.bin": component(0x00200000, amss_image()),
                  "sample.rc1": component(0x04100000), "sample.rc2": component(0x1eb00000),
                  "sample.fota": component(0x08a00000)}
         self.write(files)
@@ -182,6 +182,43 @@ class Smoke(unittest.TestCase):
         self.write(files)
         self.assertIn("Unexpected XXKG1 flash footer for RSRC1",
                       self.execute("boot", str(png), "128", status=1))
+
+    def test_modem_starts_from_mailbox_and_has_private_tcm(self):
+        # (register, value) emits an ARM literal load. Other entries are opcodes.
+        def program(instructions):
+            words = list(instructions)
+            for i, instruction in enumerate(instructions):
+                if isinstance(instruction, tuple):
+                    reg, value = instruction
+                    words[i] = 0xE59F0000 | (reg << 12) | (4 * (len(words) - i - 2))
+                    words.append(value)
+            return struct.pack(f"<{len(words)}I", *words)
+
+        ap, cp = self.path.with_name("ap.bin"), self.path.with_name("cp.bin")
+        ap.write_bytes(program([
+            (0, 0x08700015), 0xEE090F11, (1, 0x08700000), (2, 0x11), 0xE5812000,
+            (3, 0xffff0020), (4, 0x80300000), 0xE5834000,  # Publish modem reset vector
+            (3, 0x08810038), (4, 6), 0xE5834000,           # Release modem
+            (3, 0x800b4000), 0xE5935000, 0xE3550022, 0x1AFFFFFC,  # Poll shared RAM
+            0xE5916000, (3, 0x0bfffffc), 0xE5937000,     # Check local DTCM and stop
+        ]))
+        cp.write_bytes(program([
+            (0, 0x08700019), 0xEE090F11, (1, 0x08700000), (2, 0x22), 0xE5812000,
+            (3, 0x800b4000), 0xE5812000, 0xE5914000, 0xE5834000, 0xEAFFFFFE,
+        ]))
+        engine = CLI.with_name("qemu-system-arm.exe" if os.name == "nt" else "qemu-system-arm")
+        result = subprocess.run(
+            [os.environ.get("WAVE723_QEMU", str(engine)), "-M", "wave723", "-m", "32M",
+             "-smp", "2", "-accel", "tcg,thread=single", "-icount", "shift=0,sleep=off",
+             "-nodefaults", "-display", "none", "-monitor", "none", "-serial", "none",
+             "-kernel", str(ap), "-initrd", str(cp), "-append", "diagnostic:apps:2000000"],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AMSS released at 0x80300000", result.stdout)
+        self.assertIn("unmapped read at 0x0bfffffc", result.stdout)
+        self.assertIn("r5=0x00000022", result.stdout)
+        self.assertIn("r6=0x00000011", result.stdout)
 
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})

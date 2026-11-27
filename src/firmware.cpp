@@ -213,6 +213,16 @@ private:
                 throw std::runtime_error(std::string("Unexpected XXKG1 flash footer for ") + part.role);
             }
             writeFlashPayload(flash, part.start, bytes.data(), size);
+            if (std::string_view(part.role) == "AMSS") {
+                if (size < resetLiteral + 4 || word(bytes.data()) != armResetLoad ||
+                    word(bytes.data() + 0x20) != amssTag) {
+                    throw std::runtime_error("Invalid XXKG1 AMSS reset image.");
+                }
+                std::ofstream modem(path.parent_path() / "amss.bin", std::ios::binary);
+                modem.exceptions(std::ios::badbit | std::ios::failbit);
+                modem.write(reinterpret_cast<const char*>(bytes.data()), size);
+                modem.close();
+            }
         }
         flash.close();
     }

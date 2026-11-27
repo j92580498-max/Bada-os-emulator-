@@ -198,6 +198,7 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
         }
         args.emplace_back("-drive");
         args.push_back(fs::u8path("if=none,id=wave723-factory,format=raw,file=" + name));
+        args.insert(args.end(), {"-smp", "2", "-initrd", workspace.path / "amss.bin"});
     }
     const auto timeout = std::chrono::seconds(20 + instructionLimit / 5000000);
     const bool ok = run(engine, args, log, timeout);
