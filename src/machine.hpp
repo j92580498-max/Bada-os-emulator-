@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,8 @@ constexpr std::uint32_t probeRamBase = 0x80000000;
 constexpr std::uint32_t probeRamSize = 32U * 1024 * 1024;
 
 std::string runAmss(const std::vector<std::uint8_t>& image,
-                    std::uint32_t handler, std::uint32_t instructionLimit);
+                    std::uint32_t handler, std::uint32_t instructionLimit,
+                    const std::filesystem::path& qemu,
+                    const std::filesystem::path& temporaryDirectory);
 
 }  // namespace wave723

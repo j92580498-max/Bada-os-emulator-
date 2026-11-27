@@ -175,7 +175,8 @@ std::string inspectFirmware(const std::filesystem::path& path) {
     return out.str();
 }
 
-std::string traceReset(const std::filesystem::path& path, std::uint32_t instructionLimit) {
+std::string traceReset(const std::filesystem::path& path, std::uint32_t instructionLimit,
+                       const std::filesystem::path& qemu) {
     if (instructionLimit == 0 || instructionLimit > maxInstructionLimit) {
         throw std::runtime_error("Instruction limit must be between 1 and 2000000.");
     }
@@ -198,7 +199,12 @@ std::string traceReset(const std::filesystem::path& path, std::uint32_t instruct
     if ((handler & 3) || handler < amssBase || handler - amssBase >= bytes.size() - 3) {
         throw std::runtime_error("The AMSS reset handler points outside the loaded image.");
     }
-    return runAmss(bytes, handler, instructionLimit);
+#ifdef __ANDROID__
+    const auto temporaryDirectory = path.parent_path();
+#else
+    const auto temporaryDirectory = std::filesystem::temp_directory_path();
+#endif
+    return runAmss(bytes, handler, instructionLimit, qemu, temporaryDirectory);
 }
 
 }  // namespace wave723

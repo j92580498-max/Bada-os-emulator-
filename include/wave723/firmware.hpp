@@ -11,6 +11,7 @@ constexpr std::uint32_t maxInstructionLimit = 2000000;
 
 std::string inspectFirmware(const std::filesystem::path& path);
 std::string traceReset(const std::filesystem::path& path,
-                       std::uint32_t instructionLimit = defaultInstructionLimit);
+                       std::uint32_t instructionLimit = defaultInstructionLimit,
+                       const std::filesystem::path& qemu = {});
 
 }  // namespace wave723

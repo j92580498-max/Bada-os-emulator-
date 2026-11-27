@@ -93,6 +93,8 @@ public final class MainActivity extends Activity {
         File current = firmware;
         boolean runTrace = picked == null;
         if (runTrace && current == null) return;
+        String engine = new File(getApplicationInfo().nativeLibraryDir, "libwave723_qemu.so")
+                .getAbsolutePath();
         open.setEnabled(false);
         trace.setEnabled(false);
         output.setText(runTrace ? "Tracing AMSS reset..." : "Opening firmware...");
@@ -101,7 +103,7 @@ public final class MainActivity extends Activity {
             String report;
             try {
                 candidate = runTrace ? current : copyToCache(picked);
-                report = Native.readFirmware(candidate.getAbsolutePath(), runTrace);
+                report = Native.readFirmware(candidate.getAbsolutePath(), engine, runTrace);
             } catch (Exception error) {
                 if (!runTrace && candidate != null) candidate.delete();
                 candidate = null;

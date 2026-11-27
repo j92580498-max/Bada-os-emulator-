@@ -7,5 +7,5 @@ final class Native {
 
     private Native() {}
 
-    static native String readFirmware(String path, boolean trace);
+    static native String readFirmware(String path, String engine, boolean trace);
 }

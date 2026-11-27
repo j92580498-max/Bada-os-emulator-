@@ -1,10 +1,15 @@
 # Wave 723 hardware notes
 
 The target is the Samsung Wave 723 GT-S7230/E with Broadcom BCM2156. The current
-CPU model is Unicorn's ARM1176, an ARM11-family approximation. The exact SoC
+CPU model is QEMU's ARM1176, an ARM11-family approximation. The exact SoC
 revision, CP15 state and reset memory map remain unverified. The probe maps
 32 MiB from `0x80000000` to contain the linked AMSS addresses and reports
 accesses outside that range. That RAM window is a probe configuration.
+
+Photos of both sides of the supplied board show a `GTS7 230E` marking and
+a sticker ending in `EXXKG1`. The main package label is covered by the
+sticker and the adjacent Samsung package's full part number is unclear at
+the available resolution.
 
 ## S7230EXXKG1_OXGKG2
 
@@ -15,8 +20,16 @@ the FOTA ARM entry. The archive lacks a recognized standalone bootloader.
 The first AMSS word is ARM `ldr pc, [pc, #0x24]`. Its little-endian literal at
 offset `0x2c` is `0x803001fc`, with nearby exception vectors also targeting
 `0x8030xxxx`. Together these support loading the image at `0x80300000` for
-the current execution probe. The opaque `apps_compressed.bin` still needs its
-loader format identified before it can be mapped as a Bada application image.
+the current execution probe. The first write outside RAM goes to `0x08880048`.
+The related BCM21553 places its system configuration block at `0x08880000`,
+but the function of register `0x48` on BCM2156 is unverified.
+
+The last 1,024 bytes of `apps_compressed.bin` contain a Samsung flash footer
+with SEED markers and the version `S723E+XX+KG1`. An offline check of the
+decoded prefix found an ARM reset literal at offset `0x470` targeting
+`0x81000674`. This points to an APPS startup image linked at `0x81000000`.
+The emulator currently loads AMSS. APPS decoding and startup integration
+remain pending.
 
 ## Source research
 
@@ -32,6 +45,8 @@ loader format identified before it can be mapped as a Bada application image.
   [qemu-bcm21553](https://github.com/assemblycore/qemu-bcm21553/blob/6cd03d2c2a3c4cfc3b36c0cef46a7dc2821e50d0/hw/arm/bcm21553.c)
 - A related Samsung Linux kernel exposes BCM215xx machine definitions.
   [Samsung BCM21553 kernel](https://github.com/androidarmv6/android_kernel_samsung_bcm21553-common/tree/b35d0c2458d89dc2f177969a7fcb16a03cde6eee/arch/arm/mach-bcm215xx)
+- The TriX bada plugin describes the Samsung footer and format.
+  [TriX format definitions](https://github.com/g3gg0/TriX/blob/f35f8bfa90641e17ab4b33ba644482d303faa5cd/plugins/TriX_fmtBADA/fmtBADA.h)
 
 The [Hardware code search](https://github.com/j92580498-max/Bada-os-emulator-/actions/workflows/research.yml)
 workflow repeats the searches on demand. GitHub code search requires an

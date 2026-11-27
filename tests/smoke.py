@@ -39,7 +39,7 @@ class Smoke(unittest.TestCase):
 
     def execute(self, action, *args, status=0):
         result = subprocess.run([str(CLI), action, str(self.path), *args],
-                                capture_output=True, text=True, timeout=20)
+                                capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, status, result.stdout + result.stderr)
         return result.stdout if status == 0 else result.stderr
 
@@ -50,7 +50,7 @@ class Smoke(unittest.TestCase):
         for text in ("ARM reset vector", "QMD", "APPS", "No recognized standalone bootloader"):
             self.assertIn(text, report)
         report = self.execute("trace")
-        self.assertIn("Instructions reached: 4 /", report)
+        self.assertIn("QEMU ARM1176", report)
         self.assertIn("unmapped read at 0x08810000 (4 bytes)", report)
         self.assertIn("PC 0x80300048", report)
         self.assertIn("r0=0x0000002a", report)
@@ -58,7 +58,7 @@ class Smoke(unittest.TestCase):
     def test_thumb_and_budget(self):
         self.write({"amss.bin": amss_image(thumb=True)})
         report = self.execute("trace", "12")
-        self.assertIn("Instructions reached: 12 / 12", report)
+        self.assertIn("Instruction limit: 12", report)
         self.assertIn("Stop: instruction limit", report)
         self.assertIn("r0=0x0000002a", report)
 

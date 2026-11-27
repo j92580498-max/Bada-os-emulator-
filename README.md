@@ -2,7 +2,7 @@
 
 Experimental Samsung Wave 723 (GT-S7230/E, Broadcom BCM2156) emulation for
 Android, Windows, and Linux. The current milestone is firmware inspection and
-execution of the AMSS ARM reset vector. It stops at the first unsupported memory
+execution of the AMSS ARM reset vector in QEMU. It stops at the first unsupported memory
 access, CPU error, or instruction limit and reports the CPU state. Bada does
 not boot yet. Display, touchscreen, storage and bootloader emulation are pending.
 
@@ -10,7 +10,7 @@ not boot yet. Display, touchscreen, storage and bootloader emulation are pending
 
 Download a package from a successful [Build and test run](https://github.com/j92580498-max/Bada-os-emulator-/actions/workflows/build.yml).
 
-- Android 8.0 or later on ARM64 and x86-64. Install `app-debug.apk`, open the app,
+- Android 9 or later on ARM64 and x86-64. Install `app-debug.apk`, open the app,
   and select the Wave 723 firmware ZIP. Tap **Trace reset** to execute AMSS.
 - Windows x86-64 and Linux x86-64 or ARM64. Extract the package and launch
   `wave723-ui` (`wave723-ui.exe` on Windows). Open or drop the firmware ZIP into
@@ -27,26 +27,33 @@ selected archive is copied to app-private cache for random access.
 ## Build
 
 Desktop requires CMake 3.22+, a C/C++17 toolchain and Python 3 for the smoke
-tests. CI uses MSVC on Windows and GCC on Linux. Linux SDL dependencies are
-listed in the build workflow. Pass `-DWAVE723_DESKTOP=OFF` for a CLI-only build.
+tests. CI uses MSVC for the Windows frontend, MinGW for Windows QEMU and GCC
+for Linux. The [CI workflow](.github/workflows/build.yml) lists dependencies and
+the QEMU revision. Pass `-DWAVE723_DESKTOP=OFF` for a CLI-only build.
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+# After checking out the QEMU revision listed in the CI workflow:
+bash scripts/build-qemu.sh /path/to/qemu-ios build-qemu linux
+mkdir -p build-qemu/runtime
+cp build-qemu/qemu-system-arm build-qemu/runtime/
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DWAVE723_QEMU_RUNTIME=build-qemu/runtime
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
 For Android use JDK 17 with Android SDK 35, NDK 27.2.12479018 and CMake 3.22.1.
+Set `WAVE723_ANDROID_NDK` to the NDK path. Build QEMU with
+`scripts/build-qemu.sh` for each Android ABI and place the resulting
+`qemu-system-arm` at `android/app/src/main/jniLibs/<abi>/libwave723_qemu.so`.
 
 ```sh
 cd android
 ./gradlew :app:assembleDebug
 ```
 
-GitHub Actions builds and tests the packages using original, synthetic ARM and
-Thumb test images. Build inputs for Unicorn, miniz and SDL are pinned in
-`CMakeLists.txt`. This project is distributed under GPL-2.0 and uses
-[Unicorn](https://github.com/unicorn-engine/unicorn/commit/8028ec436f2d9376525352dd38ed9ed6b9f6be10),
+GitHub Actions builds and tests the packages using synthetic ARM and Thumb
+test images. This project is distributed under GPL-2.0 and uses
+[QEMU from LightTouch's Android-capable fork](https://github.com/blake-lucas/qemu-ios/commit/1955aea6930119c34b968c0596dc3cd72d67e839),
 [miniz](https://github.com/richgel999/miniz/commit/293d4db1b7d0ffee9756d035b9ac6f7431ef8492),
 and [SDL](https://github.com/libsdl-org/SDL/commit/badbf8da4ee72b3ef599c721ffc9899e8d7c8d90).
 

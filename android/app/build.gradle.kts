@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "org.wave723.emulator"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
@@ -33,6 +33,13 @@ android {
         cmake {
             path = file("../../CMakeLists.txt")
             version = "3.22.1"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += "**/libwave723_qemu.so"
         }
     }
 }

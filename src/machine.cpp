@@ -1,128 +1,185 @@
 #include "machine.hpp"
 
-#include <unicorn/unicorn.h>
-
-#include <algorithm>
-#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <iomanip>
-#include <memory>
+#include <random>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <cerrno>
+#endif
 
 namespace wave723 {
 namespace {
 
-void check(uc_err error, const char* operation) {
-    if (error != UC_ERR_OK) {
-        throw std::runtime_error(std::string(operation) + ": " + uc_strerror(error));
-    }
-}
+namespace fs = std::filesystem;
+constexpr auto processTimeout = std::chrono::seconds(20);
 
-struct Trace {
-    std::array<std::uint32_t, 12> recent{};
-    std::uint64_t count = 0;
-    uc_mem_type fault{};
-    std::uint64_t address = 0;
-    int width = 0;
+class Workspace {
+public:
+    explicit Workspace(const fs::path& parent) {
+        std::random_device random;
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            path = parent / ("wave723-" + std::to_string(random()) + "-" + std::to_string(random()));
+            if (fs::create_directory(path)) return;
+        }
+        throw std::runtime_error("Could not create a QEMU workspace.");
+    }
+    ~Workspace() {
+        std::error_code ignored;
+        fs::remove_all(path, ignored);
+    }
+    fs::path path;
 };
 
-const char* accessName(uc_mem_type type) {
-    switch (type) {
-    case UC_MEM_READ_UNMAPPED: return "unmapped read";
-    case UC_MEM_WRITE_UNMAPPED: return "unmapped write";
-    case UC_MEM_FETCH_UNMAPPED: return "unmapped instruction fetch";
-    case UC_MEM_READ_PROT: return "protected read";
-    case UC_MEM_WRITE_PROT: return "protected write";
-    case UC_MEM_FETCH_PROT: return "protected instruction fetch";
-    default: return "memory fault";
+fs::path enginePath(const fs::path& requested) {
+    if (!requested.empty()) return requested;
+#ifdef _WIN32
+    std::wstring executable(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, executable.data(), executable.size());
+    if (!length || length >= executable.size()) throw std::runtime_error("Could not locate QEMU.");
+    executable.resize(length);
+    return fs::path(executable).parent_path() / "qemu-system-arm.exe";
+#else
+    if (const char* configured = std::getenv("WAVE723_QEMU")) return configured;
+    return fs::read_symlink("/proc/self/exe").parent_path() / "qemu-system-arm";
+#endif
+}
+
+#ifdef _WIN32
+std::wstring quote(const std::wstring& argument) {
+    std::wstring result = L"\"";
+    std::size_t slashes = 0;
+    for (const auto ch : argument) {
+        if (ch == L'\\') {
+            ++slashes;
+            continue;
+        }
+        result.append(ch == L'"' ? 2 * slashes + 1 : slashes, L'\\');
+        slashes = 0;
+        result += ch;
+    }
+    result.append(2 * slashes, L'\\');
+    return result + L'"';
+}
+
+bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::path& output) {
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    HANDLE log = CreateFileW(output.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &security,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (log == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not open the QEMU log.");
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = log;
+    startup.hStdError = log;
+    PROCESS_INFORMATION process{};
+    auto command = quote(engine.native());
+    for (const auto& arg : args) command += L" " + quote(arg.native());
+    const bool started = CreateProcessW(engine.c_str(), command.data(), nullptr, nullptr,
+                                        TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
+                                        &startup, &process);
+    CloseHandle(log);
+    if (!started) {
+        throw std::runtime_error("Could not start the bundled QEMU executable.");
+    }
+    CloseHandle(process.hThread);
+    const auto wait = WaitForSingleObject(process.hProcess, 1000 * processTimeout.count());
+    if (wait != WAIT_OBJECT_0) {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+        CloseHandle(process.hProcess);
+        throw std::runtime_error("QEMU exceeded the 20-second host timeout.");
+    }
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hProcess);
+    return code == 0;
+}
+#else
+bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::path& output) {
+    std::vector<std::string> strings{engine.native()};
+    for (const auto& arg : args) strings.push_back(arg.native());
+    std::vector<char*> argv;
+    for (auto& arg : strings) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+
+    const auto child = fork();
+    if (child < 0) throw std::runtime_error("Could not start QEMU.");
+    if (child == 0) {
+        const auto log = open(output.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (log < 0 || dup2(log, STDOUT_FILENO) < 0 || dup2(log, STDERR_FILENO) < 0) _exit(126);
+        if (log != STDOUT_FILENO && log != STDERR_FILENO) close(log);
+        execv(engine.c_str(), argv.data());
+        _exit(127);
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + processTimeout;
+    int status = 0;
+    while (true) {
+        const auto result = waitpid(child, &status, WNOHANG);
+        if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (result < 0 && errno != EINTR) throw std::runtime_error("Could not wait for QEMU.");
+        if (std::chrono::steady_clock::now() >= deadline) {
+            kill(child, SIGKILL);
+            while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+            throw std::runtime_error("QEMU exceeded the 20-second host timeout.");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
-
-void instruction(uc_engine*, std::uint64_t address, std::uint32_t, void* opaque) {
-    auto& trace = *static_cast<Trace*>(opaque);
-    trace.recent[trace.count % trace.recent.size()] = static_cast<std::uint32_t>(address);
-    ++trace.count;
-}
-
-bool badMemory(uc_engine*, uc_mem_type type, std::uint64_t address, int size,
-               std::int64_t, void* opaque) {
-    auto& trace = *static_cast<Trace*>(opaque);
-    trace.fault = type;
-    trace.address = address;
-    trace.width = size;
-    return false;
-}
-
-std::uint32_t readRegister(uc_engine* cpu, int reg) {
-    std::uint32_t value = 0;
-    check(uc_reg_read(cpu, reg, &value), "Read ARM register");
-    return value;
-}
-
-void hex(std::ostream& out, std::uint64_t value) {
-    out << "0x" << std::hex << std::setfill('0') << std::setw(8) << value << std::dec;
-}
+#endif
 
 }  // namespace
 
 std::string runAmss(const std::vector<std::uint8_t>& image, std::uint32_t handler,
-                    std::uint32_t instructionLimit) {
-    uc_engine* raw = nullptr;
-    check(uc_open(UC_ARCH_ARM, UC_MODE_ARM, &raw), "Open ARM engine");
-    const std::unique_ptr<uc_engine, decltype(&uc_close)> cpu(raw, uc_close);
-    check(uc_ctl_set_cpu_model(raw, UC_CPU_ARM_1176), "Select ARM1176 probe CPU");
-    check(uc_mem_map(raw, probeRamBase, probeRamSize, UC_PROT_ALL), "Map probe RAM");
-    check(uc_mem_write(raw, amssBase, image.data(), image.size()), "Load AMSS");
-    const std::uint32_t cpsr = 0xd3;  // ARM supervisor mode with IRQ and FIQ masked.
-    check(uc_reg_write(raw, UC_ARM_REG_CPSR, &cpsr), "Initialize CPSR");
-
-    Trace trace;
-    uc_hook codeHook = 0;
-    uc_hook faultHook = 0;
-    check(uc_hook_add(raw, &codeHook, UC_HOOK_CODE, reinterpret_cast<void*>(instruction),
-                      &trace, 1, 0), "Install ARM trace hook");
-    check(uc_hook_add(raw, &faultHook, UC_HOOK_MEM_INVALID, reinterpret_cast<void*>(badMemory),
-                      &trace, 1, 0), "Install ARM memory fault hook");
-    const auto result = uc_emu_start(raw, amssBase, UINT64_MAX, 0, instructionLimit);
-
-    std::ostringstream out;
-    out << "AMSS reset trace (ARM1176 probe)\n";
-    out << "Vector ";
-    hex(out, amssBase);
-    out << " -> ";
-    hex(out, handler);
-    out << "\nInstructions reached: " << trace.count << " / " << instructionLimit << "\nStop: ";
-    if (trace.width) {
-        out << accessName(trace.fault) << " at ";
-        hex(out, trace.address);
-        out << " (" << trace.width << " bytes)";
-    } else if (result != UC_ERR_OK) {
-        out << uc_strerror(result);
-    } else {
-        out << "instruction limit";
+                    std::uint32_t instructionLimit, const fs::path& qemu,
+                    const fs::path& temporaryDirectory) {
+    const auto engine = fs::absolute(enginePath(qemu));
+    if (!fs::is_regular_file(engine)) {
+        throw std::runtime_error("The Wave 723 QEMU executable is missing.");
     }
-    out << "\nPC ";
-    hex(out, readRegister(raw, UC_ARM_REG_PC));
-    out << "  CPSR ";
-    hex(out, readRegister(raw, UC_ARM_REG_CPSR));
-    out << "\n\nRegisters\n";
-    for (int reg = 0; reg < 13; ++reg) {
-        out << 'r' << reg << '=';
-        hex(out, readRegister(raw, UC_ARM_REG_R0 + reg));
-        out << (reg % 3 == 2 ? "\n" : "  ");
+    const Workspace workspace(temporaryDirectory);
+    const auto amss = workspace.path / "amss.bin";
+    {
+        std::ofstream file(amss, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(image.data()), image.size());
+        file.close();
+        if (!file) throw std::runtime_error("Could not stage AMSS for QEMU.");
     }
-    out << "sp=";
-    hex(out, readRegister(raw, UC_ARM_REG_SP));
-    out << "  lr=";
-    hex(out, readRegister(raw, UC_ARM_REG_LR));
-    out << "\n\nRecent instruction addresses\n";
-    const auto recent = std::min<std::uint64_t>(trace.count, trace.recent.size());
-    for (std::uint64_t i = trace.count - recent; i < trace.count; ++i) {
-        hex(out, trace.recent[i % trace.recent.size()]);
-        out << ((i - (trace.count - recent)) % 4 == 3 ? '\n' : ' ');
+    const auto log = workspace.path / "qemu.log";
+    const bool ok = run(engine, {
+        "-M", "wave723", "-m", "32M", "-accel", "tcg,thread=single,one-insn-per-tb=on",
+        "-icount", "shift=0,sleep=off", "-nodefaults", "-display", "none",
+        "-monitor", "none", "-serial", "none", "-no-reboot",
+        "-kernel", amss, "-append", std::to_string(instructionLimit)
+    }, log);
+    std::ifstream file(log);
+    std::string report(8192, '\0');
+    file.read(report.data(), report.size());
+    report.resize(file.gcount());
+    if (!ok || report.find("Stop: ") == std::string::npos) {
+        throw std::runtime_error(report.empty() ? "QEMU failed to run the Wave 723 machine."
+                                                : report);
     }
-    out << '\n';
-    return out.str();
+    std::ostringstream description;
+    description << "AMSS reset trace (QEMU ARM1176)\nVector 0x" << std::hex << amssBase
+                << " -> 0x" << handler << std::dec << "\nInstruction limit: "
+                << instructionLimit << '\n' << report;
+    return description.str();
 }
 
 }  // namespace wave723

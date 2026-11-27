@@ -17,8 +17,10 @@ import org.junit.runner.RunWith;
 public final class ResetTest {
     @Test
     public void readsZipAndExecutesArmThroughJni() throws Exception {
-        File zip = File.createTempFile("test-wave723-", ".zip",
-                InstrumentationRegistry.getInstrumentation().getTargetContext().getCacheDir());
+        var context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File zip = File.createTempFile("test-wave723-", ".zip", context.getCacheDir());
+        String engine = new File(context.getApplicationInfo().nativeLibraryDir, "libwave723_qemu.so")
+                .getAbsolutePath();
         try {
             ByteBuffer image = ByteBuffer.allocate(256).order(ByteOrder.LITTLE_ENDIAN);
             image.putInt(0x00, 0xe59ff024);
@@ -31,9 +33,9 @@ public final class ResetTest {
                 out.write(image.array());
                 out.closeEntry();
             }
-            String inventory = Native.readFirmware(zip.getAbsolutePath(), false);
+            String inventory = Native.readFirmware(zip.getAbsolutePath(), engine, false);
             assertTrue(inventory, inventory.contains("ARM reset vector"));
-            String trace = Native.readFirmware(zip.getAbsolutePath(), true);
+            String trace = Native.readFirmware(zip.getAbsolutePath(), engine, true);
             assertTrue(trace, trace.contains("r0=0x0000002a"));
             assertTrue(trace, trace.contains("Stop: instruction limit"));
         } finally {

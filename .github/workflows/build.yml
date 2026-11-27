@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  QEMU_SOURCE: blake-lucas/qemu-ios
+  QEMU_REVISION: 1955aea6930119c34b968c0596dc3cd72d67e839
+
 concurrency:
   group: wave723-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -32,16 +36,48 @@ jobs:
             artifact: windows-x86_64
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QEMU_SOURCE }}
+          ref: ${{ env.QEMU_REVISION }}
+          path: build-qemu-source
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install SDL build dependencies
+      - name: Install QEMU and SDL build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libegl-dev libgl-dev libdbus-1-dev
+          sudo apt-get install -y ninja-build libglib2.0-dev libpixman-1-dev libfdt-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols libegl-dev libgl-dev libdbus-1-dev
+      - name: Build Linux QEMU
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/build-qemu.sh build-qemu-source build-qemu linux
+          mkdir -p build-qemu/runtime
+          install -m 755 build-qemu/qemu-system-arm build-qemu/runtime/qemu-system-arm
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          install: >-
+            git make diffutils
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-pixman
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-python-pip
+      - name: Build Windows QEMU
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          bash scripts/build-qemu.sh build-qemu-source build-qemu windows
+          python scripts/windows-runtime.py build-qemu/qemu-system-arm.exe build-qemu/runtime /ucrt64/bin
+      - name: Bundle QEMU license
+        shell: bash
+        run: cp build-qemu-source/COPYING build-qemu/runtime/QEMU-COPYING
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DWAVE723_QEMU_RUNTIME=build-qemu/runtime
       - name: Build
         run: cmake --build build --config Release --parallel 3
       - name: Test
@@ -57,8 +93,50 @@ jobs:
           path: ${{ runner.os == 'Linux' && format('wave723-{0}.tar.gz', matrix.artifact) || 'dist/wave723' }}
           if-no-files-found: error
 
+  qemu-android:
+    name: Android QEMU (${{ matrix.abi }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.QEMU_SOURCE }}
+          ref: ${{ env.QEMU_REVISION }}
+          path: build-qemu-source
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Install Android cross-build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config python3-venv autoconf automake libtool gettext autopoint
+          python3 -m venv "$RUNNER_TEMP/wave-meson"
+          "$RUNNER_TEMP/wave-meson/bin/pip" install meson==1.10.0 packaging==24.0
+          echo "$RUNNER_TEMP/wave-meson/bin" >> "$GITHUB_PATH"
+          sdkmanager "ndk;27.2.12479018"
+      - name: Build Android QEMU
+        run: |
+          export WAVE723_ANDROID_NDK="$ANDROID_HOME/ndk/27.2.12479018"
+          bash scripts/build-qemu.sh build-qemu-source build-qemu "${{ matrix.abi }}"
+          install -m 755 build-qemu/qemu-system-arm libwave723_qemu.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave723-qemu-${{ matrix.abi }}
+          path: libwave723_qemu.so
+          if-no-files-found: error
+
   android:
     name: Android APK and emulator test
+    needs: qemu-android
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     defaults:
@@ -66,6 +144,14 @@ jobs:
         working-directory: android
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wave723-qemu-arm64-v8a
+          path: android/app/src/main/jniLibs/arm64-v8a
+      - uses: actions/download-artifact@v4
+        with:
+          name: wave723-qemu-x86_64
+          path: android/app/src/main/jniLibs/x86_64
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
