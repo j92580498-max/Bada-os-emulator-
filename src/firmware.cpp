@@ -9,7 +9,6 @@
 #include <array>
 #include <fstream>
 #include <iomanip>
-#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -26,7 +25,6 @@ constexpr std::size_t probeHeaderSize = 64;
 constexpr std::uint32_t appsResetLoad = 0xe59ff468;
 constexpr std::size_t appsResetLiteral = 0x470;
 constexpr std::size_t flashFooterSize = 1024;
-constexpr std::size_t appsPrefixSize = 256 * 1024;
 constexpr std::uint64_t maxAppsSize = 128 * 1024 * 1024;
 constexpr std::uint32_t footerMagic = 0xabcdabcd;
 constexpr std::uint32_t seedMagic = 0x79461379;
@@ -119,11 +117,7 @@ public:
         if (info.m_uncomp_size < resetLiteral + 4 || info.m_uncomp_size > maxAmssSize) {
             throw std::runtime_error("The AMSS image size is outside the reset probe's RAM range.");
         }
-        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(info.m_uncomp_size));
-        if (!mz_zip_reader_extract_to_mem(&zip_, info.m_file_index, bytes.data(), bytes.size(), 0)) {
-            fail("Could not decompress and verify amss.bin");
-        }
-        return bytes;
+        return extract(info, "Could not decompress and verify amss.bin");
     }
 
     std::vector<std::uint8_t> appsResetImage(const mz_zip_archive_file_stat& info) {
@@ -135,43 +129,31 @@ public:
         if (payloadSize % 16 != 0) {
             throw std::runtime_error("The APPS payload must contain complete SEED blocks.");
         }
-        using ZipReader = std::unique_ptr<mz_zip_reader_extract_iter_state,
-                                          decltype(&mz_zip_reader_extract_iter_free)>;
-        ZipReader iter(mz_zip_reader_extract_iter_new(&zip_, info.m_file_index, 0),
-                       mz_zip_reader_extract_iter_free);
-        if (!iter) fail("Could not open apps_compressed.bin");
-        const auto read = [&](std::uint8_t* data, std::size_t size) {
-            if (mz_zip_reader_extract_iter_read(iter.get(), data, size) != size) {
-                fail("Could not decompress apps_compressed.bin");
-            }
-        };
-        std::vector<std::uint8_t> prefix(std::min(payloadSize, appsPrefixSize));
-        read(prefix.data(), prefix.size());
-        std::array<std::uint8_t, 32768> skip{};
-        for (auto remaining = payloadSize - prefix.size(); remaining > 0;) {
-            const auto chunk = std::min(remaining, skip.size());
-            read(skip.data(), chunk);
-            remaining -= chunk;
-        }
-        std::array<std::uint8_t, flashFooterSize> footer{};
-        read(footer.data(), footer.size());
-        if (!mz_zip_reader_extract_iter_free(iter.release())) {
-            fail("Could not verify the APPS ZIP member");
-        }
-        if (word(footer.data()) != footerMagic || word(footer.data() + 0x48) != seedMagic ||
-            word(footer.data() + 0x190) != seedMagic ||
-            word(footer.data() + 0x194) != payloadSize) {
+        auto bytes = extract(info, "Could not decompress and verify apps_compressed.bin");
+        const auto* footer = bytes.data() + payloadSize;
+        if (word(footer) != footerMagic || word(footer + 0x48) != seedMagic ||
+            word(footer + 0x190) != seedMagic || word(footer + 0x194) != payloadSize) {
             throw std::runtime_error("Unsupported APPS footer. Expected the XXKG1 SEED layout.");
         }
         std::array<std::uint32_t, 32> keys{};
         for (std::size_t i = 0; i < keys.size(); ++i) {
-            keys[i] = word(footer.data() + 0x110 + 4 * i);
+            keys[i] = word(footer + 0x110 + 4 * i);
         }
-        decryptSamsungSeed(prefix.data(), prefix.size() / 16, keys);
-        return prefix;
+        decryptSamsungSeed(bytes.data(), payloadSize / 16, keys);
+        bytes.resize(payloadSize);
+        return bytes;
     }
 
 private:
+    std::vector<std::uint8_t> extract(const mz_zip_archive_file_stat& info,
+                                      const char* operation) {
+        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(info.m_uncomp_size));
+        if (!mz_zip_reader_extract_to_mem(&zip_, info.m_file_index, bytes.data(), bytes.size(), 0)) {
+            fail(operation);
+        }
+        return bytes;
+    }
+
     [[noreturn]] void fail(const char* operation) {
         throw std::runtime_error(std::string(operation) + ": " +
             mz_zip_get_error_string(mz_zip_get_last_error(&zip_)) + ".");

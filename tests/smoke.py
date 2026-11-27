@@ -118,21 +118,28 @@ class Smoke(unittest.TestCase):
         report = self.execute("trace-apps")
         self.assertIn("APPS reset trace (QEMU ARM1176)", report)
         self.assertIn("Vector 0x81000000 -> 0x81000480", report)
-        self.assertIn("unmapped write at 0x08880048 (4 bytes)", report)
+        self.assertIn("unimplemented RAMCTRL setting at 0x08880048 (4 bytes)", report)
         self.assertIn("Write value 0x0000002b", report)
         self.assertIn("r2=0x08700015", report)
         self.assertIn("r3=0xffff0015", report)
 
-    def test_diagnostic_tcm_and_unmapped_stop(self):
+    def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})
-        strict = self.execute("trace")
-        self.assertIn("unmapped write at 0x08880048", strict)
-        report = self.execute("trace", "128", "--diagnostic")
-        self.assertIn("skipped the initial zero write", report)
+        report = self.execute("trace", "128")
         self.assertIn("unmapped read at 0x08810000", report)
         self.assertIn("r2=0x08700019", report)
         self.assertIn("r5=0x00000033", report)
         self.assertIn("r7=0x00000033", report)
+
+    def test_diagnostic_stack_ram(self):
+        image = tcm_image()
+        struct.pack_into("<I", image, 0x254, 0x0870DDA0)
+        self.write({"amss.bin": image})
+        self.assertIn("unmapped read at 0x0870dda0", self.execute("trace", "128"))
+        report = self.execute("trace", "128", "--diagnostic")
+        self.assertIn("AMSS stack RAM mapped", report)
+        self.assertIn("RAMCTRL cleared", report)
+        self.assertIn("Stop: instruction limit", report)
 
     def test_unsupported_inputs(self):
         self.path.write_bytes(b"not a zip")

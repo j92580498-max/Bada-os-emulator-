@@ -1,5 +1,6 @@
 #include "machine.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -174,9 +175,14 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
     std::string guestOptions = diagnostic ? "diagnostic:" : "";
     guestOptions += apps ? "apps:" : "amss:";
     guestOptions += std::to_string(instructionLimit);
+    constexpr std::size_t mib = 1024 * 1024;
+    const auto base = apps ? appsBase : amssBase;
+    const auto needed = base - probeRamBase + image.size();
+    const auto ramMiB = std::max(probeRamSize / mib, (needed + mib - 1) / mib);
+    const auto ramArg = std::to_string(ramMiB) + "M";
     const auto log = workspace.path / "qemu.log";
     const bool ok = run(engine, {
-        "-M", "wave723", "-m", "32M", "-accel", "tcg,thread=single,one-insn-per-tb=on",
+        "-M", "wave723", "-m", ramArg, "-accel", "tcg,thread=single,one-insn-per-tb=on",
         "-icount", "shift=0,sleep=off", "-nodefaults", "-display", "none",
         "-monitor", "none", "-serial", "none", "-no-reboot",
         "-kernel", raw, "-append", guestOptions
@@ -191,7 +197,7 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
     }
     std::ostringstream description;
     description << (apps ? "APPS" : "AMSS") << " reset trace (QEMU ARM1176)\nVector 0x"
-                << std::hex << (apps ? appsBase : amssBase)
+                << std::hex << base
                 << " -> 0x" << handler << std::dec << "\nInstruction limit: "
                 << instructionLimit << '\n';
     if (apps) description << "Decrypted APPS bytes staged: " << image.size() << '\n';

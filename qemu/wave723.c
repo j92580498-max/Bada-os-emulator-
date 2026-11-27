@@ -20,7 +20,9 @@
 #define AMSS_BASE 0x80300000
 #define APPS_BASE 0x81000000
 #define RAM_SIZE (32 * MiB)
-#define RESET_WRITE 0x08880048
+#define APPS_MAX_RAM (144 * MiB)
+#define SYSCFG_RAMCTRL 0x08880048
+#define AMSS_STACK_SRAM_BASE 0x08708000
 #define TYPE_WAVE723_MACHINE MACHINE_TYPE_NAME("wave723")
 
 typedef struct Wave723Tcm {
@@ -35,12 +37,14 @@ struct Wave723State {
     MachineState parent_obj;
     ARMCPU *cpu;
     MemoryRegion unmapped;
+    MemoryRegion ramctrl;
+    MemoryRegion diagnostic_stack;
     Wave723Tcm tcm[2];
     QEMUTimer *deadline;
     int64_t limit;
     uint32_t reset_vector;
     bool diagnostic;
-    bool skipped_reset_write;
+    bool reported_ramctrl;
     bool reported;
 };
 
@@ -113,18 +117,37 @@ static uint64_t wave723_read(void *opaque, hwaddr address, unsigned size)
 static void wave723_write(void *opaque, hwaddr address, uint64_t value,
                           unsigned size)
 {
-    Wave723State *s = opaque;
-    uint32_t reset_write_pc = s->reset_vector == APPS_BASE ?
-        APPS_BASE + 0x67c : AMSS_BASE + 0x204;
+    wave723_finish(opaque, "unmapped write", address, size, &value);
+}
 
-    if (s->diagnostic && !s->skipped_reset_write && address == RESET_WRITE &&
-        size == 4 && value == 0 && s->cpu->env.regs[15] == reset_write_pc) {
-        s->skipped_reset_write = true;
-        printf("Diagnostic: skipped the initial zero write to 0x08880048\n");
+static uint64_t wave723_ramctrl_read(void *opaque, hwaddr address, unsigned size)
+{
+    return 0;
+}
+
+static void wave723_ramctrl_write(void *opaque, hwaddr address, uint64_t value,
+                                  unsigned size)
+{
+    Wave723State *s = opaque;
+
+    /* XXKG1 clears the RAM standby, test and redundancy-reset controls. */
+    if (value != 0) {
+        wave723_finish(s, "unimplemented RAMCTRL setting", SYSCFG_RAMCTRL, size, &value);
         return;
     }
-    wave723_finish(s, "unmapped write", address, size, &value);
+    if (s->diagnostic && !s->reported_ramctrl) {
+        s->reported_ramctrl = true;
+        printf("Diagnostic: RAMCTRL cleared at 0x08880048\n");
+    }
 }
+
+static const MemoryRegionOps wave723_ramctrl_ops = {
+    .read = wave723_ramctrl_read,
+    .write = wave723_ramctrl_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
 
 static const MemoryRegionOps wave723_unmapped_ops = {
     .read = wave723_read,
@@ -147,7 +170,7 @@ static void wave723_reset(void *opaque)
         memory_region_set_enabled(&s->tcm[i].memory, false);
     }
     s->reported = false;
-    s->skipped_reset_write = false;
+    s->reported_ramctrl = false;
     cpu_set_pc(CPU(s->cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
 }
@@ -176,8 +199,10 @@ static void wave723_init(MachineState *machine)
         error_report("Wave 723 instruction limit must be between 1 and 2000000.");
         exit(1);
     }
-    if (!machine->kernel_filename || machine->ram_size != RAM_SIZE) {
-        error_report("Wave 723 requires a reset image supplied with -kernel and 32 MiB RAM.");
+    uint64_t max_ram = s->reset_vector == APPS_BASE ? APPS_MAX_RAM : RAM_SIZE;
+    if (!machine->kernel_filename || machine->ram_size < RAM_SIZE ||
+        machine->ram_size > max_ram) {
+        error_report("Wave 723 requires a reset image supplied with -kernel and a supported RAM size.");
         exit(1);
     }
     object_property_set_bool(cpu, "has_el3", false, &error_fatal);
@@ -188,6 +213,17 @@ static void wave723_init(MachineState *machine)
                           s, "wave723-unmapped", UINT64_C(1) << 32);
     memory_region_add_subregion_overlap(memory, 0, &s->unmapped, -1);
     memory_region_add_subregion(memory, RAM_BASE, machine->ram);
+    memory_region_init_io(&s->ramctrl, OBJECT(machine), &wave723_ramctrl_ops,
+                          s, "wave723.syscfg-ramctrl", 4);
+    memory_region_add_subregion(memory, SYSCFG_RAMCTRL, &s->ramctrl);
+    if (s->diagnostic && s->reset_vector == AMSS_BASE) {
+        /* The AMSS startup places its initial stack in this SRAM window. */
+        memory_region_init_ram_flags_nomigrate(&s->diagnostic_stack, OBJECT(machine),
+                                               "wave723.amss-stack", 32 * KiB, 0,
+                                               &error_fatal);
+        memory_region_add_subregion(memory, AMSS_STACK_SRAM_BASE, &s->diagnostic_stack);
+        printf("Diagnostic: AMSS stack RAM mapped at 0x08708000 (32 KiB)\n");
+    }
     for (unsigned i = 0; i < ARRAY_SIZE(s->tcm); ++i) {
         Wave723Tcm *tcm = &s->tcm[i];
         /* The two XXKG1 reset paths program different TCM sizes. */
@@ -201,7 +237,7 @@ static void wave723_init(MachineState *machine)
         memory_region_add_subregion_overlap(memory, 0, &tcm->memory, 1 + i);
     }
     load_image_targphys(machine->kernel_filename, s->reset_vector,
-                        RAM_SIZE - (s->reset_vector - RAM_BASE), &error_fatal);
+                        machine->ram_size - (s->reset_vector - RAM_BASE), &error_fatal);
     s->deadline = timer_new_ns(QEMU_CLOCK_VIRTUAL, wave723_timeout, s);
     qemu_register_reset(wave723_reset, s);
 }
