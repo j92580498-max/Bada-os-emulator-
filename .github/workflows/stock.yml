@@ -8,8 +8,11 @@ on:
         required: true
       instructions:
         description: Guest instruction budget
-        default: '700000000'
+        default: '2000000000'
         required: true
+      seconds:
+        description: Virtual seconds on the phone
+        default: '30'
       survey:
         description: Also trace unknown peripheral accesses after the stock boot
         default: 'off'
@@ -22,7 +25,7 @@ permissions:
 
 jobs:
   boot:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/wave723-panel-bringup'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
@@ -47,7 +50,7 @@ jobs:
       - name: Install screenshot tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends xvfb xauth xterm xdotool imagemagick fonts-dejavu-core gdb
+          sudo apt-get install -y --no-install-recommends imagemagick gdb python3-capstone
       - name: Stage the private test input
         env:
           MEDIA_URL: ${{ secrets.WAVE723_MEDIA_URL }}
@@ -66,14 +69,15 @@ jobs:
         id: stock
         env:
           BUDGET: ${{ inputs.instructions }}
+          WAVE723_PROBE_SECONDS: ${{ inputs.seconds }}
         run: |
           [[ $BUDGET =~ ^[1-9][0-9]{0,9}$ ]]
           export WAVE723_QEMU="$PWD/scripts/survey-engine.sh"
           export WAVE723_SURVEY_ENGINE="$PWD/wave723/qemu-system-arm"
           export WAVE723_SURVEY_SCOPE=stock
           export WAVE723_PANEL_SAMPLE="$RUNNER_TEMP/panel.rgb"
-          xvfb-run -a -s '-screen 0 1600x1000x24' bash scripts/capture-stock.sh \
-            ./wave723/wave723 "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" "$BUDGET"
+          mkdir -p stock-images
+          ./wave723/wave723 boot "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" stock-images/03-guest-lcd.png "$BUDGET"
       - name: Save the sampled panel RAM
         if: ${{ !cancelled() && (steps.stock.outcome == 'success' || steps.stock.outcome == 'failure') }}
         run: |
@@ -83,12 +87,13 @@ jobs:
         if: ${{ failure() && steps.stock.outcome == 'failure' && inputs.survey != 'off' }}
         env:
           BUDGET: ${{ inputs.instructions }}
+          WAVE723_PROBE_SECONDS: ${{ inputs.seconds }}
           WAVE723_SURVEY_SCOPE: ${{ inputs.survey }}
         run: |
           export WAVE723_QEMU="$PWD/scripts/survey-engine.sh"
           export WAVE723_SURVEY_ENGINE="$PWD/wave723/qemu-system-arm"
-          xvfb-run -a -s '-screen 0 1600x1000x24' bash scripts/capture-stock.sh \
-            ./wave723/wave723 "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" "$BUDGET" survey
+          mkdir -p stock-images
+          ./wave723/wave723 boot "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" stock-images/03-guest-lcd.png "$BUDGET"
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && hashFiles('stock-images/*.png') != '' }}
         with:
