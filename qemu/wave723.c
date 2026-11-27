@@ -25,6 +25,7 @@
 
 typedef struct Wave723Tcm {
     MemoryRegion memory;
+    uint32_t size_bits;
     uint32_t region;
 } Wave723Tcm;
 
@@ -43,10 +44,6 @@ struct Wave723State {
     bool reported;
 };
 
-/* The AMSS startup programs 32 KiB DTCM and 64 KiB ITCM. */
-static const uint32_t tcm_size[] = { 32 * KiB, 64 * KiB };
-static const uint32_t tcm_size_bits[] = { 6 << 2, 7 << 2 };
-
 static uint64_t wave723_tcm_read(CPUARMState *env, const ARMCPRegInfo *reg)
 {
     Wave723State *s = WAVE723_MACHINE(qdev_get_machine());
@@ -60,11 +57,12 @@ static void wave723_tcm_write(CPUARMState *env, const ARMCPRegInfo *reg,
     Wave723State *s = WAVE723_MACHINE(qdev_get_machine());
     unsigned bank = reg->opc2;
     Wave723Tcm *tcm = &s->tcm[bank];
-    uint32_t base = (uint32_t)value & ~(tcm_size[bank] - 1);
+    uint32_t size = memory_region_size(&tcm->memory);
+    uint32_t base = (uint32_t)value & ~(size - 1);
     bool enabled = value & 1;
 
     BQL_LOCK_GUARD();
-    tcm->region = base | tcm_size_bits[bank] | enabled;
+    tcm->region = base | tcm->size_bits | enabled;
     memory_region_transaction_begin();
     memory_region_set_address(&tcm->memory, base);
     memory_region_set_enabled(&tcm->memory, enabled);
@@ -145,7 +143,7 @@ static void wave723_reset(void *opaque)
 {
     Wave723State *s = opaque;
     for (unsigned i = 0; i < ARRAY_SIZE(s->tcm); ++i) {
-        s->tcm[i].region = tcm_size_bits[i];
+        s->tcm[i].region = s->tcm[i].size_bits;
         memory_region_set_enabled(&s->tcm[i].memory, false);
     }
     s->reported = false;
@@ -191,11 +189,16 @@ static void wave723_init(MachineState *machine)
     memory_region_add_subregion_overlap(memory, 0, &s->unmapped, -1);
     memory_region_add_subregion(memory, RAM_BASE, machine->ram);
     for (unsigned i = 0; i < ARRAY_SIZE(s->tcm); ++i) {
-        MemoryRegion *region = &s->tcm[i].memory;
-        memory_region_init_ram(region, OBJECT(machine), i ? "wave723.itcm" : "wave723.dtcm",
-                               tcm_size[i], &error_fatal);
-        memory_region_set_enabled(region, false);
-        memory_region_add_subregion_overlap(memory, 0, region, 1 + i);
+        Wave723Tcm *tcm = &s->tcm[i];
+        /* The two XXKG1 reset paths program different TCM sizes. */
+        unsigned size_code = s->reset_vector == APPS_BASE ? 5 : 6 + i;
+
+        tcm->size_bits = size_code << 2;
+        memory_region_init_ram_flags_nomigrate(&tcm->memory, OBJECT(machine),
+                                               i ? "wave723.itcm" : "wave723.dtcm",
+                                               512U << size_code, 0, &error_fatal);
+        memory_region_set_enabled(&tcm->memory, false);
+        memory_region_add_subregion_overlap(memory, 0, &tcm->memory, 1 + i);
     }
     load_image_targphys(machine->kernel_filename, s->reset_vector,
                         RAM_SIZE - (s->reset_vector - RAM_BASE), &error_fatal);

@@ -35,6 +35,9 @@ The last 1,024 bytes of `apps_compressed.bin` contain a Samsung flash footer
 with SEED markers and the version `S723E+XX+KG1`. `trace-apps` verifies the
 ZIP member, decrypts its first 256 KiB and maps the prefix at
 `0x81000000`. Its reset literal at offset `0x470` targets `0x81000674`.
+APPS programs `0x08700015` and `0xffff0015` into the TCM region registers,
+corresponding to 16 KiB DTCM and 16 KiB ITCM at those bases. The APPS probe
+uses those sizes.
 Mapping the remaining APPS payload and booting bada require further board
 emulation.
 

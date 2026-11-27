@@ -120,6 +120,8 @@ class Smoke(unittest.TestCase):
         self.assertIn("Vector 0x81000000 -> 0x81000480", report)
         self.assertIn("unmapped write at 0x08880048 (4 bytes)", report)
         self.assertIn("Write value 0x0000002b", report)
+        self.assertIn("r2=0x08700015", report)
+        self.assertIn("r3=0xffff0015", report)
 
     def test_diagnostic_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})
