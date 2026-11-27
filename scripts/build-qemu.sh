@@ -35,6 +35,7 @@ args=(
 
 case "$platform" in
     linux)
+        args+=(--enable-fdt=internal)
         ;;
     windows)
         binary=qemu-system-arm.exe
@@ -60,8 +61,8 @@ case "$platform" in
             "--cpu=$arch"
             --cross-prefix=
             --disable-containers
-            "--extra-ldflags=-Wl,-z,max-page-size=16384 -static-libstdc++"
-            --enable-pie
+            "--extra-ldflags=-pie -Wl,-z,max-page-size=16384"
+            --disable-pie
         )
         ;;
     *)

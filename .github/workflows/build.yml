@@ -128,6 +128,7 @@ jobs:
         run: |
           export WAVE723_ANDROID_NDK="$ANDROID_HOME/ndk/27.2.12479018"
           bash scripts/build-qemu.sh build-qemu-source build-qemu "${{ matrix.abi }}"
+          "$WAVE723_ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d build-qemu/qemu-system-arm
           install -m 755 build-qemu/qemu-system-arm libwave723_qemu.so
       - uses: actions/upload-artifact@v4
         with:
