@@ -321,8 +321,11 @@ class Smoke(unittest.TestCase):
             (1, 9), 0xe5c01028, 0xe5d09028,                      # Clear DONE and NOACK
             (0, 0x088ce000), (1, 2), 0xe5801008,                  # GPIO32 is an output
             (1, 1), 0xe5801014, 0xe590a01c,                       # Read back its level
-            (0, 0x0bfffffc), 0xe5900000,
+            (0, 0x04ffffe8), (1, 0x12345678), 0xe5801000,        # Publish current task
+            0xe5900004,                                         # Adjacent word is unmodeled
         ], [0xeafffffe])
+        self.assertIn("unmapped read at 0x04ffffec", trace)
+        self.assertIn("1 task pointer writes, last nonzero 0x12345678", trace)
         self.assertIn("3 mailbox commands consumed, waiting on command 0x9999", trace)
         for reg, value in enumerate([0x00030004, 0x12340003, 0xbeef4567,
                                      0x76540004, 2, 9, 0, 1], start=3):

@@ -71,6 +71,21 @@ bits. Stock APPS then writes `6` to the interrupt controller's
 written by APPS. Each core has private TCM and sees the same external RAM.
 [Broadcom SYSCFG register database](https://github.com/MoltenMotherBoard/platform_kernel_samsung_cori/blob/733fd4478845a1125715f5a05eaf8847d49bafd0/arch/arm/plat-bcmap/include/plat/rdb/brcm_rdb_syscfg.h#L189)
 
+In the stock dual-core boot, APPS configures the RNG, DES and crypto AHB
+clock gates, initializes both BSC masters and programs GPIO directions,
+pull resistors, output levels and interrupt masks. The BSCs at
+`0x088a0020` and `0x088b0020` use QEMU I²C buses and IRQs 7 and 13.
+Unpopulated slave addresses report NOACK.
+[Broadcom board model](https://github.com/assemblycore/qemu-bcm21553/blob/6cd03d2c2a3c4cfc3b36c0cef46a7dc2821e50d0/hw/arm/bcm21553.c)
+[Broadcom GPIO driver](https://github.com/Maroc-OS/Merruk-Technology/blob/fe3048483538f9e1d08a8ee1dd6a8dbbbe82a7b6/common/arch/arm/plat-bcmap/gpio.c)
+
+Eight APPS scheduler paths conditionally mirror the current task pointer
+to `0x04ffffe8`. At the first write the MMU is active, TTBR0 is
+`0x80270000`, and the section descriptor at `0x8027013c` identity-maps
+the port. The model implements a four-byte write destination. The board
+device receiving the write has yet to be identified.
+[Stock scheduler trace](https://github.com/j92580498-max/Bada-os-emulator-/actions/runs/46029574465)
+
 ## OneNAND
 
 Stock APPS reads the 16-bit manufacturer ID at `0x0041e000` and expects

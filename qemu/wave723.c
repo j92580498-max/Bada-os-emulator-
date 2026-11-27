@@ -41,6 +41,7 @@
 #define APPS_HIGH_SRAM 0xffff0000
 #define APPS_HIGH_SRAM_SIZE (32 * KiB)
 #define APPS_STARTUP_DATA 0x8bd00000
+#define APPS_TASK_PORT 0x04ffffe8
 #define TYPE_WAVE723_MACHINE MACHINE_TYPE_NAME("wave723")
 
 typedef struct Wave723Tcm {
@@ -88,6 +89,9 @@ struct Wave723State {
     MemoryRegion modem_code_sram;
     MemoryRegion high_sram;
     MemoryRegion diagnostic_startup_data;
+    MemoryRegion task_port;
+    uint32_t last_task;
+    uint64_t task_writes;
     Wave723Lcd lcd;
     Wave723OneNand nand;
     Wave723ModemIO modem_io;
@@ -174,6 +178,10 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
             printf("\nDSP: %" PRIu64 " mailbox commands consumed", s->dsp.consumed);
             if (s->dsp.checksum_requested) printf(", ROM checksum pending");
             if (s->dsp.blocked) printf(", waiting on command 0x%04x", s->dsp.blocked_command);
+            if (s->task_writes) {
+                printf("\nAPPS scheduler: %" PRIu64 " task pointer writes, last nonzero 0x%08x",
+                       s->task_writes, s->last_task);
+            }
             printf("\nLCD: %" PRIu64 " pixels, sleep-out %u, display-on %u",
                    s->lcd.writes, s->lcd.awake, s->lcd.display_on);
         }
@@ -332,6 +340,31 @@ static const MemoryRegionOps wave723_reg32_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+/* XXKG1 mirrors the current task here during context switches. */
+static MemTxResult task_port_read(void *opaque, hwaddr offset, uint64_t *data,
+                                  unsigned size, MemTxAttrs attrs)
+{
+    *data = 0;
+    return wave723_bus_error(opaque, APPS_TASK_PORT, size, NULL);
+}
+
+static MemTxResult task_port_write(void *opaque, hwaddr offset, uint64_t value,
+                                   unsigned size, MemTxAttrs attrs)
+{
+    Wave723State *s = opaque;
+    if (value) {
+        s->last_task = value;
+    }
+    ++s->task_writes;
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps task_port_ops = {
+    .read_with_attrs = task_port_read, .write_with_attrs = task_port_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
 /* DOGCR startup writes configure the interrupt/deep-sleep bits with EN clear. */
 static uint64_t watchdog_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -422,6 +455,8 @@ static void wave723_reset(void *opaque)
     s->dsp_clock = 0;
     s->arm9_sleep = 0;
     s->pin_config = 0;
+    s->last_task = 0;
+    s->task_writes = 0;
     memset(s->watchdog_config, 0, sizeof(s->watchdog_config));
     s->survey_count = 0;
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
@@ -578,6 +613,9 @@ static void wave723_init(MachineState *machine)
         printf("Diagnostic: AMSS stack RAM mapped at 0x08708000 (32 KiB)\n");
     }
     if (s->reset_vector == APPS_BASE) {
+        memory_region_init_io(&s->task_port, OBJECT(machine), &task_port_ops,
+                              s, "wave723.apps-task-port", 4);
+        memory_region_add_subregion_overlap(&s->primary.view, APPS_TASK_PORT, &s->task_port, 1);
         /* XXKG1 maps 32 KiB here and disables ITCM to access the SRAM. */
         memory_region_init_ram_flags_nomigrate(&s->high_sram, OBJECT(machine),
                                                "wave723.apps-high-sram", APPS_HIGH_SRAM_SIZE, 0,
