@@ -24,36 +24,32 @@
 #endif
 
 namespace wave723 {
-namespace {
-
 namespace fs = std::filesystem;
-constexpr auto processTimeout = std::chrono::seconds(20);
 
-class Workspace {
-public:
-    explicit Workspace(const fs::path& parent) {
-        std::random_device random;
-        for (int attempt = 0; attempt < 10; ++attempt) {
-            path = parent / ("wave723-" + std::to_string(random()) + "-" + std::to_string(random()));
-            if (!fs::create_directory(path)) continue;
+QemuWorkspace::QemuWorkspace(const fs::path& parent) {
+    std::random_device random;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        path = parent / ("wave723-" + std::to_string(random()) + "-" + std::to_string(random()));
+        if (!fs::create_directory(path)) continue;
 #ifndef _WIN32
-            std::error_code error;
-            fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, error);
-            if (error) {
-                fs::remove(path);
-                throw std::runtime_error("Could not protect the QEMU workspace.");
-            }
-#endif
-            return;
+        std::error_code error;
+        fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, error);
+        if (error) {
+            fs::remove(path);
+            throw std::runtime_error("Could not protect the QEMU workspace.");
         }
-        throw std::runtime_error("Could not create a QEMU workspace.");
+#endif
+        return;
     }
-    ~Workspace() {
-        std::error_code ignored;
-        fs::remove_all(path, ignored);
-    }
-    fs::path path;
-};
+    throw std::runtime_error("Could not create a QEMU workspace.");
+}
+
+QemuWorkspace::~QemuWorkspace() {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+}
+
+namespace {
 
 fs::path enginePath(const fs::path& requested) {
     if (!requested.empty()) return requested;
@@ -86,7 +82,8 @@ std::wstring quote(const std::wstring& argument) {
     return result + L'"';
 }
 
-bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::path& output) {
+bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::path& output,
+         std::chrono::seconds timeout) {
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     HANDLE log = CreateFileW(output.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &security,
                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -108,12 +105,12 @@ bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::pa
         throw std::runtime_error("Could not start the bundled QEMU executable.");
     }
     CloseHandle(process.hThread);
-    const auto wait = WaitForSingleObject(process.hProcess, 1000 * processTimeout.count());
+    const auto wait = WaitForSingleObject(process.hProcess, static_cast<DWORD>(1000 * timeout.count()));
     if (wait != WAIT_OBJECT_0) {
         TerminateProcess(process.hProcess, 1);
         WaitForSingleObject(process.hProcess, INFINITE);
         CloseHandle(process.hProcess);
-        throw std::runtime_error("QEMU exceeded the 20-second host timeout.");
+        throw std::runtime_error("QEMU exceeded the host timeout.");
     }
     DWORD code = 1;
     GetExitCodeProcess(process.hProcess, &code);
@@ -121,7 +118,8 @@ bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::pa
     return code == 0;
 }
 #else
-bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::path& output) {
+bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::path& output,
+         std::chrono::seconds timeout) {
     std::vector<std::string> strings{engine.native()};
     for (const auto& arg : args) strings.push_back(arg.native());
     std::vector<char*> argv;
@@ -138,7 +136,7 @@ bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::pa
         _exit(127);
     }
 
-    const auto deadline = std::chrono::steady_clock::now() + processTimeout;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     int status = 0;
     while (true) {
         const auto result = waitpid(child, &status, WNOHANG);
@@ -147,7 +145,7 @@ bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::pa
         if (std::chrono::steady_clock::now() >= deadline) {
             kill(child, SIGKILL);
             while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
-            throw std::runtime_error("QEMU exceeded the 20-second host timeout.");
+            throw std::runtime_error("QEMU exceeded the host timeout.");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -158,13 +156,12 @@ bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::pa
 
 std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
                      std::uint32_t handler, std::uint32_t instructionLimit,
-                     const fs::path& qemu, const fs::path& temporaryDirectory,
+                     const fs::path& qemu, const QemuWorkspace& workspace,
                      bool diagnostic, PanelFrame* panel) {
     const auto engine = fs::absolute(enginePath(qemu));
     if (!fs::is_regular_file(engine)) {
         throw std::runtime_error("The Wave 723 QEMU executable is missing.");
     }
-    const Workspace workspace(temporaryDirectory);
     const auto raw = workspace.path / "reset.bin";
     {
         std::ofstream file(raw, std::ios::binary);
@@ -185,12 +182,25 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
     const auto ramMiB = std::max(minimumRam / mib, (needed + mib - 1) / mib);
     const auto ramArg = std::to_string(ramMiB) + "M";
     const auto log = workspace.path / "qemu.log";
-    const bool ok = run(engine, {
-        "-M", "wave723", "-m", ramArg, "-accel", "tcg,thread=single,one-insn-per-tb=on",
+    std::vector<fs::path> args{
+        "-M", "wave723", "-m", ramArg, "-accel",
+        apps && panel ? "tcg,thread=single" : "tcg,thread=single,one-insn-per-tb=on",
         "-icount", "shift=0,sleep=off", "-nodefaults", "-display", "none",
         "-monitor", "none", "-serial", "none", "-no-reboot",
         "-kernel", raw, "-append", guestOptions
-    }, log);
+    };
+    const auto flash = workspace.path / "onenand.img";
+    const bool hasFlash = fs::is_regular_file(flash);
+    if (hasFlash) {
+        auto name = fs::absolute(flash).u8string();
+        for (std::size_t i = 0; (i = name.find(',', i)) != name.npos; i += 2) {
+            name.insert(i, 1, ',');
+        }
+        args.emplace_back("-drive");
+        args.push_back(fs::u8path("if=none,id=wave723-factory,format=raw,file=" + name));
+    }
+    const auto timeout = std::chrono::seconds(20 + instructionLimit / 5000000);
+    const bool ok = run(engine, args, log, timeout);
     std::ifstream file(log);
     std::string report(8192, '\0');
     file.read(report.data(), report.size());
@@ -221,6 +231,7 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
                 << " -> 0x" << handler << std::dec << "\nInstruction limit: "
                 << instructionLimit << '\n';
     if (apps) description << "APPS bytes staged: " << image.size() << '\n';
+    if (hasFlash) description << "OneNAND: XXKG1 FSR volume and flash components attached\n";
     description << report;
     return description.str();
 }

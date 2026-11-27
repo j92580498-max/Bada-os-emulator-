@@ -17,10 +17,18 @@ constexpr std::uint32_t probeRamSize = 32U * 1024 * 1024;
 
 enum class ResetTarget { Amss, Apps };
 
+class QemuWorkspace {
+public:
+    explicit QemuWorkspace(const std::filesystem::path& parent);
+    ~QemuWorkspace();
+    QemuWorkspace(const QemuWorkspace&) = delete;
+    QemuWorkspace& operator=(const QemuWorkspace&) = delete;
+    std::filesystem::path path;
+};
+
 std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
                      std::uint32_t handler, std::uint32_t instructionLimit,
-                     const std::filesystem::path& qemu,
-                     const std::filesystem::path& temporaryDirectory, bool diagnostic,
+                     const std::filesystem::path& qemu, const QemuWorkspace& workspace, bool diagnostic,
                      PanelFrame* panel = nullptr);
 
 }  // namespace wave723

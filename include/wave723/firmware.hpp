@@ -8,8 +8,8 @@
 namespace wave723 {
 
 constexpr std::uint32_t defaultInstructionLimit = 100000;
-constexpr std::uint32_t maxInstructionLimit = 20000000;
-constexpr std::uint32_t bootInstructionLimit = 8000000;
+constexpr std::uint32_t maxInstructionLimit = 2000000000;
+constexpr std::uint32_t bootInstructionLimit = 200000000;
 
 struct PanelFrame {
     static constexpr int width = 240;

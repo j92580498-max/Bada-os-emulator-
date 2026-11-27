@@ -358,8 +358,8 @@ static void wave723_init(MachineState *machine)
         limit += strlen("amss:");
     }
     s->limit = limit && *limit ? g_ascii_strtoll(limit, &end, 10) : 100000;
-    if ((end && *end) || s->limit <= 0 || s->limit > 20000000) {
-        error_report("Wave 723 instruction limit must be between 1 and 20000000.");
+    if ((end && *end) || s->limit <= 0 || s->limit > 2000000000) {
+        error_report("Wave 723 instruction limit must be between 1 and 2000000000.");
         exit(1);
     }
     uint64_t max_ram = s->reset_vector == APPS_BASE ? APPS_MAX_RAM : RAM_SIZE;

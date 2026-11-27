@@ -1,5 +1,6 @@
 #include "wave723/firmware.hpp"
 
+#include "flash.hpp"
 #include "machine.hpp"
 #include "qmd.hpp"
 #include "seed.hpp"
@@ -155,7 +156,8 @@ public:
         return {image.begin() + offset, image.begin() + offset + size};
     }
 
-    std::vector<std::uint8_t> appsResetImage(const mz_zip_archive_file_stat& info) {
+    std::vector<std::uint8_t> appsResetImage(const mz_zip_archive_file_stat& info,
+                                             const std::filesystem::path& flash) {
         if (info.m_uncomp_size < flashFooterSize + appsResetLiteral + 4 ||
             info.m_uncomp_size > maxAppsSize) {
             throw std::runtime_error("The APPS image size is outside the supported range.");
@@ -174,12 +176,47 @@ public:
         for (std::size_t i = 0; i < keys.size(); ++i) {
             keys[i] = word(footer + 0x110 + 4 * i);
         }
+        const bool provision = !flash.empty() &&
+            std::string_view(reinterpret_cast<const char*>(footer + 0x1e8), 12) == "S723E+XX+KG1";
+        if (provision && word(footer + 4) != 0x00a00000) {
+            throw std::runtime_error("Unexpected XXKG1 APPS flash address.");
+        }
         decryptSamsungSeed(bytes.data(), payloadSize / 16, keys);
         bytes.resize(payloadSize);
+        if (provision) writeFactoryImage(flash, bytes);
         return expandAppsQmd(std::move(bytes));
     }
 
 private:
+    void writeFactoryImage(const std::filesystem::path& path, const std::vector<std::uint8_t>& apps) {
+        std::ofstream flash(path, std::ios::binary);
+        flash.exceptions(std::ios::badbit | std::ios::failbit);
+        initializeXxkg1Flash(flash);
+        if (apps.size() > 0x04100000 - 0x00a00000) {
+            throw std::runtime_error("XXKG1 APPS exceeds its flash extent.");
+        }
+        writeFlashPayload(flash, 0x00a00000, apps.data(), apps.size());
+        struct Component { const char* role; std::uint32_t start, end; };
+        constexpr std::array<Component, 4> components{{
+            {"AMSS", 0x00200000, 0x00a00000}, {"RSRC1", 0x04100000, 0x08a00000},
+            {"FOTA", 0x08a00000, 0x08d00000}, {"RSRC2", 0x1eb00000, 0x1ef00000},
+        }};
+        for (const auto& part : components) {
+            const auto entry = find(part.role, part.role);
+            if (entry.m_uncomp_size <= flashFooterSize ||
+                entry.m_uncomp_size - flashFooterSize > part.end - part.start) {
+                throw std::runtime_error(std::string("Invalid XXKG1 flash extent for ") + part.role);
+            }
+            const auto bytes = extract(entry, "Could not verify the flash component");
+            const auto size = bytes.size() - flashFooterSize;
+            if (word(bytes.data() + size) != footerMagic || word(bytes.data() + size + 4) != part.start) {
+                throw std::runtime_error(std::string("Unexpected XXKG1 flash footer for ") + part.role);
+            }
+            writeFlashPayload(flash, part.start, bytes.data(), size);
+        }
+        flash.close();
+    }
+
     std::vector<std::uint8_t> extract(const mz_zip_archive_file_stat& info,
                                       const char* operation) {
         std::vector<std::uint8_t> bytes(static_cast<std::size_t>(info.m_uncomp_size));
@@ -239,8 +276,10 @@ std::string traceImage(const std::filesystem::path& path, ResetTarget target,
     const std::string_view part = apps ? "APPS" : "AMSS";
     const std::string filename = apps ? "apps_compressed.bin" : "amss.bin";
     Archive archive(path);
+    const QemuWorkspace workspace(temporaryDirectory(path));
     const auto entry = archive.find(part, filename);
-    const auto bytes = apps ? archive.appsResetImage(entry) : archive.image(entry);
+    const auto flash = panel ? workspace.path / "onenand.img" : std::filesystem::path{};
+    const auto bytes = apps ? archive.appsResetImage(entry, flash) : archive.image(entry);
     if (apps && (word(bytes.data()) != appsResetLoad || word(bytes.data() + 4) != appsResetLoad)) {
         throw std::runtime_error("Unsupported APPS reset header. Expected the XXKG1 vector layout.");
     }
@@ -252,7 +291,7 @@ std::string traceImage(const std::filesystem::path& path, ResetTarget target,
     if ((handler & 3) || handler < base || handler - base >= bytes.size() - 3) {
         throw std::runtime_error(std::string(part) + " reset handler points outside the staged image.");
     }
-    return runReset(target, bytes, handler, instructionLimit, qemu, temporaryDirectory(path),
+    return runReset(target, bytes, handler, instructionLimit, qemu, workspace,
                     diagnostic, panel);
 }
 
@@ -294,8 +333,9 @@ PanelFrame renderBootLogo(const std::filesystem::path& path, const std::filesyst
     }
     image.insert(image.end(), bitmap.begin(), bitmap.end());
     PanelFrame frame;
+    const QemuWorkspace workspace(temporaryDirectory(path));
     const auto report = runReset(ResetTarget::Amss, image, amssBase, 4 * pixels + 32, qemu,
-                                 temporaryDirectory(path), false, &frame);
+                                 workspace, false, &frame);
     if (frame.rgb.empty()) {
         throw std::runtime_error("QEMU did not produce a visible boot-logo frame.\n" + report);
     }

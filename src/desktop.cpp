@@ -10,6 +10,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -21,7 +22,8 @@ constexpr auto lineColumns = 105;
 
 const SDL_FRect openButton{24, 69, 125, 37};
 const SDL_FRect traceButton{161, 69, 146, 37};
-const SDL_FRect logoButton{319, 69, 129, 37};
+const SDL_FRect bootButton{319, 69, 144, 37};
+const SDL_FRect logoButton{475, 69, 136, 37};
 const SDL_FRect panel{24, 123, 872, 427};
 const SDL_FRect lcd{340, 136, wave723::PanelFrame::width, wave723::PanelFrame::height};
 
@@ -92,11 +94,19 @@ struct App {
         }
     }
 
-    void showLogo(SDL_Renderer* renderer) {
+    void showDisplay(SDL_Renderer* renderer, bool boot) {
         if (firmware.empty()) return;
         try {
-            const auto frame = wave723::renderBootLogo(firmware);
-            show("");
+            wave723::PanelFrame frame;
+            if (boot) {
+                auto result = wave723::bootApps(firmware);
+                show(result.trace);
+                if (result.panel.rgb.empty()) return;
+                frame = std::move(result.panel);
+            } else {
+                frame = wave723::renderBootLogo(firmware);
+                show("");
+            }
             screen.reset(SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24,
                                            SDL_TEXTUREACCESS_STATIC, frame.width, frame.height));
             if (!screen || !SDL_UpdateTexture(screen.get(), nullptr, frame.rgb.data(),
@@ -117,7 +127,8 @@ struct App {
         SDL_RenderDebugText(renderer, 24, 43, "Firmware and reset trace");
         button(renderer, openButton, "Open ZIP", true);
         button(renderer, traceButton, "Trace reset", !firmware.empty());
-        button(renderer, logoButton, "Boot logo", !firmware.empty());
+        button(renderer, bootButton, "Boot firmware", !firmware.empty());
+        button(renderer, logoButton, "Preview logo", !firmware.empty());
         color(renderer, 22, 34, 49);
         SDL_RenderFillRect(renderer, &panel);
         color(renderer, 211, 225, 239);
@@ -179,8 +190,10 @@ int main(int argc, char** argv) {
                     SDL_ShowOpenFileDialog(filePicked, nullptr, window, filters, 1, nullptr, false);
                 } else if (contains(traceButton, event.button.x, event.button.y)) {
                     app.trace();
+                } else if (contains(bootButton, event.button.x, event.button.y)) {
+                    app.showDisplay(renderer, true);
                 } else if (contains(logoButton, event.button.x, event.button.y)) {
-                    app.showLogo(renderer);
+                    app.showDisplay(renderer, false);
                 }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:

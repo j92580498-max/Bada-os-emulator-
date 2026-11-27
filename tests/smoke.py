@@ -159,6 +159,30 @@ class Smoke(unittest.TestCase):
                       self.execute("boot", str(image), "128", status=1))
         self.assertFalse(image.exists())
 
+    def test_xxkg1_boot_provisions_the_factory_flash(self):
+        def component(start):
+            footer = bytearray(1024)
+            struct.pack_into("<II", footer, 0, 0xABCDABCD, start)
+            return b"test payload" + footer
+
+        apps = bytearray(apps_image())
+        apps[-1024 + 0x1e8:-1024 + 0x1f4] = b"S723E+XX+KG1"
+        files = {"apps_compressed.bin": apps, "amss.bin": component(0x00200000),
+                 "sample.rc1": component(0x04100000), "sample.rc2": component(0x1eb00000),
+                 "sample.fota": component(0x08a00000)}
+        self.write(files)
+        png = self.path.with_suffix(".png")
+        result = subprocess.run([str(CLI), "boot", str(self.path), str(png), "128"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("XXKG1 FSR volume and flash components attached", result.stdout)
+        self.assertIn("r2=0x08700015", result.stdout)
+        self.assertFalse(png.exists())
+        files["sample.rc1"] = component(0x00200000)
+        self.write(files)
+        self.assertIn("Unexpected XXKG1 flash footer for RSRC1",
+                      self.execute("boot", str(png), "128", status=1))
+
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})
         report = self.execute("trace", "128")
