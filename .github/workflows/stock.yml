@@ -10,6 +10,10 @@ on:
         description: Guest instruction budget
         default: '700000000'
         required: true
+      survey:
+        description: Also trace unknown peripheral accesses after a stock boot stop
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -56,12 +60,21 @@ jobs:
             tar -x -C "$RUNNER_TEMP/stock" --no-same-owner --no-same-permissions \
               S7230EXXKG1_OXGKG2.zip S7230EXXKG1_OXGKG2/BOOTFILES/sysparm_{ind,dep}.img
       - name: Boot XXKG1 and capture the LCD
+        id: stock
         env:
           BUDGET: ${{ inputs.instructions }}
         run: |
           [[ $BUDGET =~ ^[1-9][0-9]{0,9}$ ]]
           xvfb-run -a -s '-screen 0 1600x1000x24' bash scripts/capture-stock.sh \
             ./wave723/wave723 "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" "$BUDGET"
+      - name: Diagnostic peripheral survey
+        if: ${{ failure() && steps.stock.outcome == 'failure' && inputs.survey }}
+        env:
+          BUDGET: ${{ inputs.instructions }}
+        run: |
+          export WAVE723_QEMU="$PWD/scripts/survey-engine.sh"
+          export WAVE723_SURVEY_ENGINE="$PWD/wave723/qemu-system-arm"
+          ./wave723/wave723 boot "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" "$RUNNER_TEMP/survey.png" "$BUDGET"
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && hashFiles('stock-images/*.png') != '' }}
         with:
