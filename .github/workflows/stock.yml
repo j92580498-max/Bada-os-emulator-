@@ -68,8 +68,17 @@ jobs:
           BUDGET: ${{ inputs.instructions }}
         run: |
           [[ $BUDGET =~ ^[1-9][0-9]{0,9}$ ]]
+          export WAVE723_QEMU="$PWD/scripts/survey-engine.sh"
+          export WAVE723_SURVEY_ENGINE="$PWD/wave723/qemu-system-arm"
+          export WAVE723_SURVEY_SCOPE=stock
+          export WAVE723_PANEL_SAMPLE="$RUNNER_TEMP/panel.rgb"
           xvfb-run -a -s '-screen 0 1600x1000x24' bash scripts/capture-stock.sh \
             ./wave723/wave723 "$RUNNER_TEMP/stock/S7230EXXKG1_OXGKG2.zip" "$BUDGET"
+      - name: Save the sampled panel RAM
+        if: ${{ !cancelled() && (steps.stock.outcome == 'success' || steps.stock.outcome == 'failure') }}
+        run: |
+          [[ $(stat -c %s "$RUNNER_TEMP/panel.rgb") == 288000 ]]
+          convert -size 240x400 -depth 8 "rgb:$RUNNER_TEMP/panel.rgb" stock-images/04-panel-memory.png
       - name: Diagnostic peripheral survey
         if: ${{ failure() && steps.stock.outcome == 'failure' && inputs.survey != 'off' }}
         env:
