@@ -24,6 +24,7 @@
 #define APPS_MAX_RAM (144 * MiB)
 #define SYSCFG_RAMCTRL 0x08880048
 #define AMSS_STACK_SRAM_BASE 0x08708000
+#define APPS_HIGH_SRAM_TAIL 0xffff4000
 #define TYPE_WAVE723_MACHINE MACHINE_TYPE_NAME("wave723")
 
 typedef struct Wave723Tcm {
@@ -31,6 +32,13 @@ typedef struct Wave723Tcm {
     uint32_t size_bits;
     uint32_t region;
 } Wave723Tcm;
+
+typedef struct Wave723SurveyReg {
+    hwaddr address;
+    uint64_t value;
+    bool read_seen;
+    bool write_seen;
+} Wave723SurveyReg;
 
 OBJECT_DECLARE_SIMPLE_TYPE(Wave723State, WAVE723_MACHINE)
 
@@ -40,6 +48,7 @@ struct Wave723State {
     MemoryRegion unmapped;
     MemoryRegion ramctrl;
     MemoryRegion diagnostic_stack;
+    MemoryRegion diagnostic_high_sram;
     Wave723Lcd lcd;
     Wave723Tcm tcm[2];
     QEMUTimer *deadline;
@@ -47,6 +56,9 @@ struct Wave723State {
     uint32_t reset_vector;
     bool diagnostic;
     bool capture_panel;
+    bool survey;
+    Wave723SurveyReg survey_regs[48];
+    unsigned survey_count;
     bool reported_ramctrl;
     bool reported;
 };
@@ -114,16 +126,58 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
     qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
 }
 
+static Wave723SurveyReg *wave723_survey_register(Wave723State *s, hwaddr address)
+{
+    if (!s->survey || address < 0x08000000 || address >= 0x09000000) {
+        return NULL;
+    }
+    for (unsigned i = 0; i < s->survey_count; ++i) {
+        if (s->survey_regs[i].address == address) {
+            return &s->survey_regs[i];
+        }
+    }
+    if (s->survey_count == ARRAY_SIZE(s->survey_regs)) {
+        return NULL;
+    }
+    Wave723SurveyReg *reg = &s->survey_regs[s->survey_count++];
+    reg->address = address;
+    return reg;
+}
+
 static uint64_t wave723_read(void *opaque, hwaddr address, unsigned size)
 {
-    wave723_finish(opaque, "unmapped read", address, size, NULL);
+    Wave723State *s = opaque;
+    Wave723SurveyReg *reg = wave723_survey_register(s, address);
+
+    if (reg) {
+        if (!reg->read_seen) {
+            printf("Survey read 0x%08" PRIx64 " (%u) PC 0x%08" PRIx32 "\n",
+                   (uint64_t)address, size, s->cpu->env.regs[15]);
+            reg->read_seen = true;
+        }
+        return reg->value;
+    }
+    wave723_finish(s, "unmapped read", address, size, NULL);
     return 0;
 }
 
 static void wave723_write(void *opaque, hwaddr address, uint64_t value,
                           unsigned size)
 {
-    wave723_finish(opaque, "unmapped write", address, size, &value);
+    Wave723State *s = opaque;
+    Wave723SurveyReg *reg = wave723_survey_register(s, address);
+
+    if (reg) {
+        if (!reg->write_seen) {
+            printf("Survey write 0x%08" PRIx64 " (%u) = 0x%08" PRIx64
+                   " PC 0x%08" PRIx32 "\n", (uint64_t)address, size, value,
+                   s->cpu->env.regs[15]);
+            reg->write_seen = true;
+        }
+        reg->value = value;
+        return;
+    }
+    wave723_finish(s, "unmapped write", address, size, &value);
 }
 
 static uint64_t wave723_ramctrl_read(void *opaque, hwaddr address, unsigned size)
@@ -177,6 +231,8 @@ static void wave723_reset(void *opaque)
     }
     s->reported = false;
     s->reported_ramctrl = false;
+    s->survey_count = 0;
+    memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
     cpu_set_pc(CPU(s->cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
@@ -199,6 +255,10 @@ static void wave723_init(MachineState *machine)
         s->diagnostic = true;
         limit += strlen("diagnostic:");
     }
+    if (limit && g_str_has_prefix(limit, "survey:")) {
+        s->survey = true;
+        limit += strlen("survey:");
+    }
     if (limit && g_str_has_prefix(limit, "apps:")) {
         s->reset_vector = APPS_BASE;
         limit += strlen("apps:");
@@ -206,8 +266,8 @@ static void wave723_init(MachineState *machine)
         limit += strlen("amss:");
     }
     s->limit = limit && *limit ? g_ascii_strtoll(limit, &end, 10) : 100000;
-    if ((end && *end) || s->limit <= 0 || s->limit > 2000000) {
-        error_report("Wave 723 instruction limit must be between 1 and 2000000.");
+    if ((end && *end) || s->limit <= 0 || s->limit > 20000000) {
+        error_report("Wave 723 instruction limit must be between 1 and 20000000.");
         exit(1);
     }
     uint64_t max_ram = s->reset_vector == APPS_BASE ? APPS_MAX_RAM : RAM_SIZE;
@@ -235,6 +295,14 @@ static void wave723_init(MachineState *machine)
                                                &error_fatal);
         memory_region_add_subregion(memory, AMSS_STACK_SRAM_BASE, &s->diagnostic_stack);
         printf("Diagnostic: AMSS stack RAM mapped at 0x08708000 (32 KiB)\n");
+    }
+    if (s->diagnostic && s->reset_vector == APPS_BASE) {
+        /* XXKG1 copies 0x3d10 bytes to 0xffff0400 during APPS startup. */
+        memory_region_init_ram_flags_nomigrate(&s->diagnostic_high_sram, OBJECT(machine),
+                                               "wave723.apps-high-sram", 4 * KiB, 0,
+                                               &error_fatal);
+        memory_region_add_subregion(memory, APPS_HIGH_SRAM_TAIL, &s->diagnostic_high_sram);
+        printf("Diagnostic: APPS high SRAM mapped at 0xffff4000 (4 KiB)\n");
     }
     for (unsigned i = 0; i < ARRAY_SIZE(s->tcm); ++i) {
         Wave723Tcm *tcm = &s->tcm[i];

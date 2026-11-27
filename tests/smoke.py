@@ -151,6 +151,13 @@ class Smoke(unittest.TestCase):
         self.assertEqual(decoded, (b"\x00" + bytes((255, 0, 0)) * 240) * 200 +
                                   (b"\x00" + bytes((0, 0, 255)) * 240) * 200)
 
+    def test_stock_boot_requires_a_guest_frame(self):
+        self.write({"apps_compressed.bin": apps_image(), "Resources.rc2": lcd_rc2()})
+        image = self.path.with_suffix(".png")
+        self.assertIn("Stock APPS did not produce a visible LCD frame",
+                      self.execute("boot", str(image), "128", status=1))
+        self.assertFalse(image.exists())
+
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})
         report = self.execute("trace", "128")

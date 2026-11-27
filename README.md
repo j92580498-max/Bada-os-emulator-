@@ -19,13 +19,17 @@ Download a package from a successful [Build and test run](https://github.com/j92
 
 ```sh
 ./wave723 inspect /path/to/S7230EXXKG1_OXGKG2.zip
+./wave723 boot /path/to/S7230EXXKG1_OXGKG2.zip wave723-screen.png
 ./wave723 boot-logo /path/to/S7230EXXKG1_OXGKG2.zip wave723-logo.png
 ./wave723 trace /path/to/S7230EXXKG1_OXGKG2.zip 100000
 ./wave723 trace-apps /path/to/S7230EXXKG1_OXGKG2.zip 100000
 ```
 
 Add `--diagnostic` to get early hardware logging. For AMSS, this also enables a
-provisional SRAM window for the stack used by the XXKG1 startup code.
+provisional SRAM window for the stack used by the XXKG1 startup code. APPS
+uses a provisional page for its high-memory initialization. The `boot`
+command runs stock APPS with these diagnostics and saves a capture when APPS
+has painted a visible frame.
 
 Use your own firmware archive. Firmware is opened read-only. On Android the
 selected archive is copied to app-private cache for random access.

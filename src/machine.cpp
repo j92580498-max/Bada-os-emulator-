@@ -202,13 +202,15 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
         capture += ".panel.rgb";
         constexpr auto size = PanelFrame::width * PanelFrame::height * 3;
         std::ifstream pixels(capture, std::ios::binary | std::ios::ate);
-        if (pixels.tellg() != size) {
-            throw std::runtime_error("QEMU did not produce a complete LCD capture.\n" + report);
-        }
-        panel->rgb.resize(size);
-        pixels.seekg(0);
-        if (!pixels.read(reinterpret_cast<char*>(panel->rgb.data()), size)) {
-            throw std::runtime_error("Could not read QEMU's LCD capture.");
+        if (pixels) {
+            if (pixels.tellg() != size) {
+                throw std::runtime_error("QEMU produced an incomplete LCD capture.");
+            }
+            panel->rgb.resize(size);
+            pixels.seekg(0);
+            if (!pixels.read(reinterpret_cast<char*>(panel->rgb.data()), size)) {
+                throw std::runtime_error("Could not read QEMU's LCD capture.");
+            }
         }
     }
     std::ostringstream description;

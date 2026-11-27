@@ -45,7 +45,10 @@ and `0x80000`. The loader expands their raw, compressed-block and paged
 entries before mapping the image. The table describes a 94 MiB result.
 APPS programs `0x08700015` and `0xffff0015` into the TCM region registers,
 corresponding to 16 KiB DTCM and 16 KiB ITCM at those bases. The APPS probe
-uses those sizes.
+uses those sizes. At `0x81351dc8`, stock APPS initializes `0x3d10` bytes at
+`0xffff0400`, through address `0xffff410f`. The last 272 bytes extend beyond
+the programmed ITCM. Diagnostic runs map a provisional 4 KiB page at
+`0xffff4000` to cover the observed initialization.
 Booting bada requires further board emulation.
 
 ## First LCD frame
@@ -61,6 +64,9 @@ data and status registers are at offsets `0x00`, `0x04` and `0x1c` from
 `0x08030000`. The model implements RGB565 panel memory, addressing windows and
 display enable. DMA and stock firmware display initialization remain pending.
 [Broadcom LCD register definitions](https://github.com/MoltenMotherBoard/platform_kernel_samsung_cori/blob/733fd4478845a1125715f5a05eaf8847d49bafd0/drivers/video/broadcom/dss/bcm215xx/reg_lcdc.h)
+
+Stock APPS contains the same command, data and status addresses. The
+`boot` command requests an LCD capture directly from stock APPS execution.
 
 ## Source research
 

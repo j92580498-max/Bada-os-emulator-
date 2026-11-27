@@ -230,9 +230,10 @@ std::filesystem::path temporaryDirectory(const std::filesystem::path& path) {
 
 std::string traceImage(const std::filesystem::path& path, ResetTarget target,
                        std::uint32_t instructionLimit, const std::filesystem::path& qemu,
-                       bool diagnostic) {
+                       bool diagnostic, PanelFrame* panel = nullptr) {
     if (instructionLimit == 0 || instructionLimit > maxInstructionLimit) {
-        throw std::runtime_error("Instruction limit must be between 1 and 2000000.");
+        throw std::runtime_error("Instruction limit must be between 1 and " +
+                                 std::to_string(maxInstructionLimit) + ".");
     }
     const bool apps = target == ResetTarget::Apps;
     const std::string_view part = apps ? "APPS" : "AMSS";
@@ -252,10 +253,18 @@ std::string traceImage(const std::filesystem::path& path, ResetTarget target,
         throw std::runtime_error(std::string(part) + " reset handler points outside the staged image.");
     }
     return runReset(target, bytes, handler, instructionLimit, qemu, temporaryDirectory(path),
-                    diagnostic);
+                    diagnostic, panel);
 }
 
 }  // namespace
+
+BootResult bootApps(const std::filesystem::path& path, std::uint32_t instructionLimit,
+                    const std::filesystem::path& qemu) {
+    BootResult result;
+    result.trace = traceImage(path, ResetTarget::Apps, instructionLimit, qemu, true,
+                              &result.panel);
+    return result;
+}
 
 PanelFrame renderBootLogo(const std::filesystem::path& path, const std::filesystem::path& qemu) {
     Archive archive(path);
@@ -285,8 +294,11 @@ PanelFrame renderBootLogo(const std::filesystem::path& path, const std::filesyst
     }
     image.insert(image.end(), bitmap.begin(), bitmap.end());
     PanelFrame frame;
-    runReset(ResetTarget::Amss, image, amssBase, 4 * pixels + 32, qemu,
-             temporaryDirectory(path), false, &frame);
+    const auto report = runReset(ResetTarget::Amss, image, amssBase, 4 * pixels + 32, qemu,
+                                 temporaryDirectory(path), false, &frame);
+    if (frame.rgb.empty()) {
+        throw std::runtime_error("QEMU did not produce a visible boot-logo frame.\n" + report);
+    }
     return frame;
 }
 
