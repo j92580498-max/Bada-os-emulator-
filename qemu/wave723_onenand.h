@@ -1,0 +1,25 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef WAVE723_ONENAND_H
+#define WAVE723_ONENAND_H
+
+#include "system/memory.h"
+
+#define WAVE723_NAND_PAGE_SIZE 4096
+#define WAVE723_NAND_SPARE_SIZE 256
+
+typedef struct Wave723OneNand {
+    MemoryRegion region;
+    BlockBackend *media;
+    int64_t media_size;
+    uint16_t regs[0x1000];
+    uint8_t boot[512];
+    uint8_t data[2][WAVE723_NAND_PAGE_SIZE];
+    uint8_t spare[2][WAVE723_NAND_SPARE_SIZE];
+    bool otp;
+} Wave723OneNand;
+
+void wave723_onenand_init(Wave723OneNand *nand, Object *owner,
+                         MemoryRegion *memory);
+void wave723_onenand_reset(Wave723OneNand *nand);
+
+#endif

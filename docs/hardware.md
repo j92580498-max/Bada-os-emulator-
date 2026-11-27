@@ -64,8 +64,26 @@ timebase. The GPT control and interrupt registers still need modeling.
 
 The handoff routine also sets bit 21 in `SYSCFG_IOCR3` at `0x0888001c`.
 The register retains pin configuration writes and preserves its reserved
-bits.
+bits. Stock APPS then writes `6` to the interrupt controller's
+`ARM9_SLEEP` register at `0x08810038`. QEMU retains the register value.
+Running an AMSS core alongside APPS remains pending.
 [Broadcom SYSCFG register database](https://github.com/MoltenMotherBoard/platform_kernel_samsung_cori/blob/733fd4478845a1125715f5a05eaf8847d49bafd0/arch/arm/plat-bcmap/include/plat/rdb/brcm_rdb_syscfg.h#L189)
+
+## OneNAND
+
+Stock APPS reads the 16-bit manufacturer ID at `0x0041e000` and expects
+`0xec` for Samsung. This locates the OneNAND window at `0x00400000`.
+The model uses the related Totoro model's 512 MiB geometry with 4 KiB
+pages. It exposes the data and spare buffers and supports read commands.
+The Wave 723 chip revision and spare-area contents remain unverified.
+[Linux OneNAND registers](https://github.com/torvalds/linux/blob/9437ee8b6cf607e883b36e44bd755968daaebd48/include/linux/mtd/onenand_regs.h)
+[Totoro OneNAND model](https://github.com/assemblycore/qemu-bcm21553/blob/6cd03d2c2a3c4cfc3b36c0cef46a7dc2821e50d0/hw/arm/totoro-onenand-probe.h)
+
+To attach a page-aligned dump of the main NAND area, pass
+`-drive if=none,id=wave723-flash,format=raw,readonly=on,file=flash.bin`
+when running QEMU directly. The `boot` command currently starts with erased
+flash. The firmware ZIP holds update files and flash offsets and still
+needs to be translated into the NAND volume expected by the firmware.
 
 Booting bada requires further board emulation.
 

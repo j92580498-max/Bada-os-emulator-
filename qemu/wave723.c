@@ -17,6 +17,7 @@
 #include "target/arm/cpregs.h"
 #include "target/arm/cpu.h"
 #include "wave723_lcd.h"
+#include "wave723_onenand.h"
 
 #define RAM_BASE 0x80000000
 #define AMSS_BASE 0x80300000
@@ -25,6 +26,7 @@
 #define APPS_MAX_RAM (256 * MiB)
 #define GPT0_COUNT 0x0883010c
 #define GPT0_FREQUENCY 32768
+#define INTC_ARM9_SLEEP 0x08810038
 #define SYSCFG_IOCR3 0x0888001c
 #define SYSCFG_IOCR3_RESERVED 0x82054008
 #define SYSCFG_RAMCTRL 0x08880048
@@ -62,10 +64,13 @@ struct Wave723State {
     MemoryRegion ramctrl;
     MemoryRegion armahb_mode;
     uint32_t clock_mode;
+    MemoryRegion arm9_sleep_reg;
+    uint32_t arm9_sleep;
     MemoryRegion diagnostic_stack;
     MemoryRegion high_sram;
     MemoryRegion diagnostic_startup_data;
     Wave723Lcd lcd;
+    Wave723OneNand nand;
     Wave723Tcm tcm[2];
     QEMUTimer *deadline;
     int64_t limit;
@@ -271,22 +276,20 @@ static const MemoryRegionOps wave723_iocr3_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
-static uint64_t wave723_clock_mode_read(void *opaque, hwaddr address, unsigned size)
+static uint64_t wave723_reg32_read(void *opaque, hwaddr address, unsigned size)
 {
-    Wave723State *s = opaque;
-    return s->clock_mode;
+    return *(uint32_t *)opaque;
 }
 
-static void wave723_clock_mode_write(void *opaque, hwaddr address, uint64_t value,
-                                     unsigned size)
+static void wave723_reg32_write(void *opaque, hwaddr address, uint64_t value,
+                                unsigned size)
 {
-    Wave723State *s = opaque;
-    s->clock_mode = value;
+    *(uint32_t *)opaque = value;
 }
 
-static const MemoryRegionOps wave723_clock_mode_ops = {
-    .read = wave723_clock_mode_read,
-    .write = wave723_clock_mode_write,
+static const MemoryRegionOps wave723_reg32_ops = {
+    .read = wave723_reg32_read,
+    .write = wave723_reg32_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = { .min_access_size = 4, .max_access_size = 4 },
     .impl = { .min_access_size = 4, .max_access_size = 4 },
@@ -315,12 +318,14 @@ static void wave723_reset(void *opaque)
     s->reported = false;
     s->reported_ramctrl = false;
     s->clock_mode = 0;
+    s->arm9_sleep = 0;
     s->pin_config = 0;
     s->gpt0_reload = UINT32_MAX;
     s->gpt0_epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->survey_count = 0;
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
+    wave723_onenand_reset(&s->nand);
     cpu_set_pc(CPU(s->cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
 }
@@ -380,10 +385,14 @@ static void wave723_init(MachineState *machine)
     memory_region_init_io(&s->ramctrl, OBJECT(machine), &wave723_ramctrl_ops,
                           s, "wave723.syscfg-ramctrl", 4);
     memory_region_add_subregion(memory, SYSCFG_RAMCTRL, &s->ramctrl);
-    memory_region_init_io(&s->armahb_mode, OBJECT(machine), &wave723_clock_mode_ops,
-                          s, "wave723.clkpwr-armahb-mode", 4);
+    memory_region_init_io(&s->armahb_mode, OBJECT(machine), &wave723_reg32_ops,
+                          &s->clock_mode, "wave723.clkpwr-armahb-mode", 4);
     memory_region_add_subregion(memory, CLKPWR_ARMAHB_MODE, &s->armahb_mode);
+    memory_region_init_io(&s->arm9_sleep_reg, OBJECT(machine), &wave723_reg32_ops,
+                          &s->arm9_sleep, "wave723.intc-arm9-sleep", 4);
+    memory_region_add_subregion(memory, INTC_ARM9_SLEEP, &s->arm9_sleep_reg);
     wave723_lcd_init(&s->lcd, OBJECT(machine), memory);
+    wave723_onenand_init(&s->nand, OBJECT(machine), memory);
     if (s->diagnostic && s->reset_vector == AMSS_BASE) {
         /* The AMSS startup places its initial stack in this SRAM window. */
         memory_region_init_ram_flags_nomigrate(&s->diagnostic_stack, OBJECT(machine),

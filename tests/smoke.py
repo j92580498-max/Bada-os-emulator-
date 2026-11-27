@@ -1,3 +1,4 @@
+import os
 import struct
 import subprocess
 import sys
@@ -165,6 +166,34 @@ class Smoke(unittest.TestCase):
         self.assertIn("r2=0x08700019", report)
         self.assertIn("r5=0x00000033", report)
         self.assertIn("r7=0x00000033", report)
+
+    def test_onenand_reads_the_selected_page(self):
+        image = self.path.with_name("nand-test.bin")
+        flash = self.path.with_name("flash.bin")
+        image.write_bytes(struct.pack(
+            "<15I",
+            0xE59F0024, 0xE59F1024,       # Load OneNAND base and START_ADDRESS8.
+            0xE3A02004, 0xE1C120B0,       # Select page 1.
+            0xE59F101C, 0xE3A02000, 0xE1C120B0,  # Issue READ.
+            0xE59F1014, 0xE1D130B0,       # Read completion status.
+            0xE5904400, 0xEAFFFFFE,       # Read the first word from DataRAM.
+            0x00400000, 0x0041E20E, 0x0041E440, 0x0041E482,
+        ))
+        flash.write_bytes(b"\xff" * 4096 +
+                          struct.pack("<I", 0x12345678) + b"\xff" * 4092)
+        engine = CLI.with_name("qemu-system-arm.exe" if os.name == "nt" else "qemu-system-arm")
+        drive = "if=none,id=wave723-flash,format=raw,readonly=on,file=" + str(flash).replace(",", ",,")
+        result = subprocess.run(
+            [os.environ.get("WAVE723_QEMU", str(engine)), "-M", "wave723", "-m", "32M",
+             "-accel", "tcg,thread=single,one-insn-per-tb=on", "-icount", "shift=0,sleep=off",
+             "-nodefaults", "-display", "none", "-monitor", "none", "-serial", "none",
+             "-kernel", str(image), "-append", "amss:128", "-drive", drive],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Stop: instruction limit", result.stdout)
+        self.assertIn("r3=0x00008080", result.stdout)
+        self.assertIn("r4=0x12345678", result.stdout)
 
     def test_diagnostic_stack_ram(self):
         image = tcm_image()
