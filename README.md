@@ -22,6 +22,9 @@ Download a package from a successful [Build and test run](https://github.com/j92
 ./wave723 trace-apps /path/to/S7230EXXKG1_OXGKG2.zip 100000
 ```
 
+Add `--diagnostic` to either trace command to skip the single observed startup
+write to `0x08880048` and report the next blocker.
+
 Use your own firmware archive. Firmware is opened read-only. On Android the
 selected archive is copied to app-private cache for random access.
 

@@ -24,6 +24,13 @@ the current execution probe. The first write outside RAM goes to `0x08880048`.
 The related BCM21553 places its system configuration block at `0x08880000`,
 but the function of register `0x48` on BCM2156 is unverified.
 
+The emulator's diagnostic mode bypasses that single 32-bit zero write at
+the observed reset instruction. AMSS then writes `0x08700019` to CP15
+`c9, c1, 0` and `0x0000001d` to `c9, c1, 1`, then copies its exception
+vectors to address zero. The probe implements these as 32 KiB of DTCM
+and 64 KiB of ITCM controlled by their region registers. QEMU models
+these as RAM windows for the separate addresses used during startup.
+
 The last 1,024 bytes of `apps_compressed.bin` contain a Samsung flash footer
 with SEED markers and the version `S723E+XX+KG1`. `trace-apps` verifies the
 ZIP member, decrypts its first 256 KiB and maps the prefix at
@@ -45,6 +52,8 @@ emulation.
   [qemu-bcm21553](https://github.com/assemblycore/qemu-bcm21553/blob/6cd03d2c2a3c4cfc3b36c0cef46a7dc2821e50d0/hw/arm/bcm21553.c)
 - A related Samsung Linux kernel exposes BCM215xx machine definitions.
   [Samsung BCM21553 kernel](https://github.com/androidarmv6/android_kernel_samsung_bcm21553-common/tree/b35d0c2458d89dc2f177969a7fcb16a03cde6eee/arch/arm/mach-bcm215xx)
+- The ARM Linux TCM support identifies the CP15 register encodings and size fields.
+  [ARM TCM setup](https://github.com/torvalds/linux/blob/master/arch/arm/kernel/tcm.c)
 - The TriX bada plugin describes the Samsung footer and format.
   [TriX format definitions](https://github.com/g3gg0/TriX/blob/f35f8bfa90641e17ab4b33ba644482d303faa5cd/plugins/TriX_fmtBADA/fmtBADA.h)
 

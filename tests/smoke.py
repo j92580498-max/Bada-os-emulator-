@@ -43,6 +43,40 @@ def apps_image():
     return encrypted + footer
 
 
+def tcm_image():
+    data = bytearray(0x260)
+    struct.pack_into("<I", data, 0x00, 0xE59FF024)
+    struct.pack_into("<I", data, 0x20, 0xBABEFACE)
+    struct.pack_into("<I", data, 0x2C, 0x803001FC)
+    words = [
+        0xE59F0040,  # Load reset-register address from +0x244.
+        0xE3A01000,
+        0xE5801000,  # The known boot write at +0x204.
+        0xE59F0038,
+        0xEE090F11,  # Configure DTCM.
+        0xEE192F11,  # Read the DTCM configuration back in r2.
+        0xE59F3030,
+        0xE3A04033,
+        0xE5834000,  # Write through the DTCM mapping.
+        0xE5935000,  # Read through the DTCM mapping.
+        0xE59F0024,
+        0xEE090F31,  # Configure ITCM at zero.
+        0xE3A06000,
+        0xE5865000,
+        0xE5967000,  # Read through the ITCM mapping.
+        0xE59F8014,
+        0xE5989000,  # A different unmodeled access still stops the probe.
+        0xEAFFFFFE,
+        0x08880048,
+        0x08700019,
+        0x08700000,
+        0x0000001D,
+        0x08810000,
+    ]
+    struct.pack_into(f"<{len(words)}I", data, 0x1FC, *words)
+    return data
+
+
 class Smoke(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -86,6 +120,17 @@ class Smoke(unittest.TestCase):
         self.assertIn("Vector 0x81000000 -> 0x81000480", report)
         self.assertIn("unmapped write at 0x08880048 (4 bytes)", report)
         self.assertIn("Write value 0x0000002b", report)
+
+    def test_diagnostic_tcm_and_unmapped_stop(self):
+        self.write({"amss.bin": tcm_image()})
+        strict = self.execute("trace")
+        self.assertIn("unmapped write at 0x08880048", strict)
+        report = self.execute("trace", "128", "--diagnostic")
+        self.assertIn("skipped the initial zero write", report)
+        self.assertIn("unmapped read at 0x08810000", report)
+        self.assertIn("r2=0x08700019", report)
+        self.assertIn("r5=0x00000033", report)
+        self.assertIn("r7=0x00000033", report)
 
     def test_unsupported_inputs(self):
         self.path.write_bytes(b"not a zip")

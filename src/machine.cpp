@@ -156,7 +156,8 @@ bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::pa
 
 std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
                      std::uint32_t handler, std::uint32_t instructionLimit,
-                     const fs::path& qemu, const fs::path& temporaryDirectory) {
+                     const fs::path& qemu, const fs::path& temporaryDirectory,
+                     bool diagnostic) {
     const auto engine = fs::absolute(enginePath(qemu));
     if (!fs::is_regular_file(engine)) {
         throw std::runtime_error("The Wave 723 QEMU executable is missing.");
@@ -170,7 +171,9 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
         if (!file) throw std::runtime_error("Could not stage the reset image for QEMU.");
     }
     const bool apps = target == ResetTarget::Apps;
-    const auto guestOptions = (apps ? "apps:" : "amss:") + std::to_string(instructionLimit);
+    std::string guestOptions = diagnostic ? "diagnostic:" : "";
+    guestOptions += apps ? "apps:" : "amss:";
+    guestOptions += std::to_string(instructionLimit);
     const auto log = workspace.path / "qemu.log";
     const bool ok = run(engine, {
         "-M", "wave723", "-m", "32M", "-accel", "tcg,thread=single,one-insn-per-tb=on",

@@ -17,8 +17,8 @@ static int run(int argc, const Arg::value_type* const* argv) {
     using namespace wave723;
     if (argc == 2 && Arg(argv[1]) == NATIVE("--help")) {
         std::cout << "Usage: wave723 inspect FIRMWARE.zip\n"
-                     "       wave723 trace FIRMWARE.zip [INSTRUCTION_LIMIT]\n"
-                     "       wave723 trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT]\n";
+                     "       wave723 trace FIRMWARE.zip [INSTRUCTION_LIMIT] [--diagnostic]\n"
+                     "       wave723 trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT] [--diagnostic]\n";
         return 0;
     }
     try {
@@ -27,10 +27,12 @@ static int run(int argc, const Arg::value_type* const* argv) {
             return 0;
         }
         const Arg action = argc > 1 ? Arg(argv[1]) : Arg{};
-        if ((argc == 3 || argc == 4) &&
+        const bool diagnostic = argc >= 4 && Arg(argv[argc - 1]) == NATIVE("--diagnostic");
+        const int arguments = argc - diagnostic;
+        if ((arguments == 3 || arguments == 4) &&
             (action == NATIVE("trace") || action == NATIVE("trace-apps"))) {
             auto limit = defaultInstructionLimit;
-            if (argc == 4) {
+            if (arguments == 4) {
                 const auto text = std::filesystem::path(argv[3]).u8string();
                 const auto end = text.data() + text.size();
                 const auto parsed = std::from_chars(text.data(), end, limit);
@@ -39,11 +41,11 @@ static int run(int argc, const Arg::value_type* const* argv) {
                 }
             }
             const auto path = std::filesystem::path(argv[2]);
-            std::cout << (action == NATIVE("trace-apps") ? traceAppsReset(path, limit)
-                                                        : traceReset(path, limit));
+            std::cout << (action == NATIVE("trace-apps") ? traceAppsReset(path, limit, {}, diagnostic)
+                                                        : traceReset(path, limit, {}, diagnostic));
             return 0;
         }
-        std::cerr << "Usage: wave723 inspect|trace|trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT]\n";
+        std::cerr << "Usage: wave723 inspect|trace|trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT] [--diagnostic]\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "wave723: " << error.what() << '\n';

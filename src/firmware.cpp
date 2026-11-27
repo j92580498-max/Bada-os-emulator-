@@ -204,7 +204,8 @@ void writeName(std::ostream& out, std::string_view name) {
 }
 
 std::string traceImage(const std::filesystem::path& path, ResetTarget target,
-                       std::uint32_t instructionLimit, const std::filesystem::path& qemu) {
+                       std::uint32_t instructionLimit, const std::filesystem::path& qemu,
+                       bool diagnostic) {
     if (instructionLimit == 0 || instructionLimit > maxInstructionLimit) {
         throw std::runtime_error("Instruction limit must be between 1 and 2000000.");
     }
@@ -242,7 +243,7 @@ std::string traceImage(const std::filesystem::path& path, ResetTarget target,
 #else
     const auto temporaryDirectory = std::filesystem::temp_directory_path();
 #endif
-    return runReset(target, bytes, handler, instructionLimit, qemu, temporaryDirectory);
+    return runReset(target, bytes, handler, instructionLimit, qemu, temporaryDirectory, diagnostic);
 }
 
 }  // namespace
@@ -272,13 +273,13 @@ std::string inspectFirmware(const std::filesystem::path& path) {
 }
 
 std::string traceReset(const std::filesystem::path& path, std::uint32_t instructionLimit,
-                       const std::filesystem::path& qemu) {
-    return traceImage(path, ResetTarget::Amss, instructionLimit, qemu);
+                       const std::filesystem::path& qemu, bool diagnostic) {
+    return traceImage(path, ResetTarget::Amss, instructionLimit, qemu, diagnostic);
 }
 
 std::string traceAppsReset(const std::filesystem::path& path, std::uint32_t instructionLimit,
-                           const std::filesystem::path& qemu) {
-    return traceImage(path, ResetTarget::Apps, instructionLimit, qemu);
+                           const std::filesystem::path& qemu, bool diagnostic) {
+    return traceImage(path, ResetTarget::Apps, instructionLimit, qemu, diagnostic);
 }
 
 }  // namespace wave723
