@@ -21,17 +21,18 @@ jobs:
             local output="$1"
             shift
             local error="results/$output.stderr"
+            local retry_pattern='HTTP 429|rate limit|try again in'
             for attempt in 1 2 3; do
               if gh search code "$@" --limit 25 --json repository,path,url > "results/$output.json" 2>"$error"; then
                 rm "$error"
                 return
               fi
-              if [[ $attempt == 3 ]] || ! rg -qi '(HTTP 429|rate limit|try again in)' "$error"; then
+              if [[ $attempt == 3 || ! $(<"$error") =~ $retry_pattern ]]; then
                 cat "$error" >&2
                 status=1
                 return
               fi
-              sleep 22
+              sleep 30
             done
           }
           search bcm2156 BCM2156
