@@ -68,6 +68,7 @@ message = apps_text(6)
 if source.endswith('.c') and message:
     print('APPS diagnostic: %s:%d: %s' % (source, int(ap['regs'][5]), message))
 pg5, = struct.unpack('<I', read_guest(0x808b4334, 4))
+print('DSP shared page pointers:', [hex(i) for i in struct.unpack('<7I', read_guest(0x808b4320, 28))])
 print('AMSS page 5 shared memory:', hex(pg5))
 if 0x80000000 <= pg5 < 0x8ffff000:
     producer, consumer = struct.unpack('<HH', read_guest(pg5 + 0x400, 4))
@@ -77,7 +78,7 @@ if 0x80000000 <= pg5 < 0x8ffff000:
                    for i in range((producer-consumer)%128)]
         print('Queued DSP commands (ID, count):', [(hex(cmd), sum(1 for e in entries if e[0] == cmd))
               for cmd in sorted({e[0] for e in entries})])
-        print('First queued commands:', entries[:6])
+        print('First queued commands:', entries[:18])
 # XXKG1 __xassert sets this flag and saves its four arguments at 0x80626484.
 if read_guest(0x808b3664, 4) == bytes((0xca,0,0,0)):
     args = struct.unpack('<4I', read_guest(0x808b3814, 16))
