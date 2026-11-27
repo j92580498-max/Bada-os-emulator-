@@ -85,7 +85,12 @@ when running QEMU directly. The `boot` command currently starts with erased
 flash. The firmware ZIP holds update files and flash offsets and still
 needs to be translated into the NAND volume expected by the firmware.
 
-Booting bada requires further board emulation.
+With erased flash, stock XXKG1 reaches the Samsung FSR block manager.
+The volume open call at `0x812831dc` returns `0x90330000`
+(`FSR_BML_NO_UPCB`, missing unlocked pool control block). The firmware
+then branches to itself at `0x81253988` before drawing an LCD frame.
+The update ZIP lacks this on-flash volume metadata.
+[Samsung FSR return codes](https://github.com/CyanogenMod/samsung-kernel-galaxys/blob/478280015136456e6410f3f6b60260e4b104272f/drivers/tfsr/Inc/FSR_BML.h#L263)
 
 ## First LCD frame
 
