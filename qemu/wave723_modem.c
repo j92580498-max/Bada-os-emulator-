@@ -10,7 +10,6 @@ typedef struct ConfigRange {
     hwaddr base;
     unsigned words;
     uint32_t writable;
-    bool cpu_local;
 } ConfigRange;
 
 /* These are configuration registers. Keep unrelated offsets off the bus. */
@@ -24,14 +23,6 @@ static const ConfigRange config_ranges[] = {
     { "rf-data-config", 0x08169410, 1, 0x000f0f13 },
     { "searcher-clock", 0x08169f88, 1, 0x3ff0ffcc },
     { "turbo-decoder-static-params", 0x0816a140, 1, 0x000f07ff },
-    { "irq-trigger-0", 0x08810010, 4, UINT32_MAX, true },
-    { "irq-trigger-1", 0x08810110, 4, UINT32_MAX, true },
-    { "irq-control", 0x08810024, 1, 0x0000ffef, true },
-    { "irq-wake-mask-0", 0x08810140, 1, UINT32_MAX, true },
-    { "irq-wake-mask-1", 0x08810148, 1, UINT32_MAX, true },
-    /* Reads of ICR are zero. Its write-one-to-clear has no pending sources at reset. */
-    { "irq-clear-0", 0x08810008, 1, 0, true },
-    { "irq-clear-1", 0x08810108, 1, 0, true },
     { "uart-a-control", 0x08820100, 1, UINT32_MAX },
     { "uart-a-fifo-control", 0x08820108, 1, UINT32_MAX },
     { "uart-b-control", 0x08821100, 1, UINT32_MAX },
@@ -119,22 +110,53 @@ static uint64_t sleep_read(void *opaque, hwaddr offset, unsigned size)
     }
 }
 
+static void schedule_match(Wave723ModemIO *io)
+{
+    if (!(io->control & 1)) {
+        timer_del(io->match);
+        return;
+    }
+    uint32_t divisor = MAX(1u, io->reload);
+    uint64_t ticks = sleep_ticks(io);
+    uint64_t counts = (uint32_t)(io->compare - ticks / divisor);
+    if (!counts) counts = UINT64_C(1) << 32;
+    uint64_t until = counts * divisor - ticks % divisor;
+    int64_t ns = muldiv64(until, NANOSECONDS_PER_SECOND, 32768) + 1;
+    timer_mod(io->match, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ns);
+}
+
+static void sleep_match(void *opaque)
+{
+    Wave723ModemIO *io = opaque;
+    wave723_intc_pulse(io->intc, 0);
+    schedule_match(io);
+}
+
 static void sleep_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
     Wave723ModemIO *io = opaque;
+    uint32_t divisor = MAX(1u, io->reload);
+    uint64_t ticks = sleep_ticks(io);
     switch (offset) {
     case 0:
         io->reload = value & 0x1fff;
+        io->ticks = (ticks / divisor) * MAX(1u, io->reload);
         break;
     case 8:
-        io->ticks = sleep_ticks(io);
-        io->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        io->ticks = ticks;
         io->control = value & 7;
         break;
     case 12:
         io->compare = value;
+        io->ticks = ticks;
         break;
+    case 16:
+        io->ticks = (uint64_t)(uint32_t)value * divisor + ticks % divisor;
+        break;
+    default: return;
     }
+    io->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    schedule_match(io);
 }
 
 static const MemoryRegionOps sleep_ops = {
@@ -144,8 +166,10 @@ static const MemoryRegionOps sleep_ops = {
 };
 
 void wave723_modem_io_init(Wave723ModemIO *io, Object *owner,
-                           MemoryRegion *system, MemoryRegion *modem)
+                           MemoryRegion *system, Wave723Intc *intc)
 {
+    io->intc = intc;
+    io->match = timer_new_ns(QEMU_CLOCK_VIRTUAL, sleep_match, io);
     io->config = g_new0(Wave723ConfigBank, ARRAY_SIZE(config_ranges));
     for (unsigned i = 0; i < ARRAY_SIZE(config_ranges); ++i) {
         const ConfigRange *range = &config_ranges[i];
@@ -153,8 +177,7 @@ void wave723_modem_io_init(Wave723ModemIO *io, Object *owner,
         bank->writable = range->writable;
         memory_region_init_io(&bank->region, owner, &config_ops, bank,
                               range->name, range->words * 4);
-        memory_region_add_subregion_overlap(range->cpu_local ? modem : system,
-                                            range->base, &bank->region, 1);
+        memory_region_add_subregion(system, range->base, &bank->region);
     }
     memory_region_init_io(&io->layer1, owner, &layer1_ops, io, "wave723.layer1-intc", 0x80);
     memory_region_add_subregion(system, 0x0816c280, &io->layer1);
@@ -177,4 +200,5 @@ void wave723_modem_io_reset(Wave723ModemIO *io)
     io->reload = 0;
     io->control = 0;
     io->compare = 0;
+    timer_del(io->match);
 }

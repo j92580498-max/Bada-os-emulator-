@@ -2,7 +2,7 @@
 #ifndef WAVE723_MODEM_H
 #define WAVE723_MODEM_H
 
-#include "system/memory.h"
+#include "wave723_intc.h"
 
 typedef struct Wave723ConfigBank Wave723ConfigBank;
 
@@ -12,6 +12,8 @@ typedef struct Wave723ModemIO {
     uint32_t layer1_enable[4];
     uint32_t layer1_pending[4];
     MemoryRegion sleep_timer;
+    Wave723Intc *intc;
+    QEMUTimer *match;
     int64_t epoch;
     uint64_t ticks;
     uint32_t reload;
@@ -20,7 +22,7 @@ typedef struct Wave723ModemIO {
 } Wave723ModemIO;
 
 void wave723_modem_io_init(Wave723ModemIO *io, Object *owner,
-                           MemoryRegion *system, MemoryRegion *modem);
+                           MemoryRegion *system, Wave723Intc *intc);
 void wave723_modem_io_reset(Wave723ModemIO *io);
 
 #endif

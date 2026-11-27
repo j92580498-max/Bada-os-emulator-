@@ -260,7 +260,12 @@ class Smoke(unittest.TestCase):
             (3, 0xffff0020), (4, 0x80300000), 0xE5834000,  # Publish modem reset vector
             (3, 0x08810038), (4, 6), 0xE5834000,           # Release modem
             (3, 0x800b4000), 0xE5935000, 0xE3550022, 0x1AFFFFFC,  # Poll shared RAM
-            0xE5938004, 0xE5916000, (3, 0x0bfffffc), 0xE5937000,
+            0xE5938004, 0xE5916000,
+            (3, 0x08810100), (4, 0x800),
+            0xE5834000, 0xE5834048, 0xE5834030,    # Enable for APPS and AMSS, set software IRQ
+            0xE5939004, 0xE593A00C, 0xE593B04C,    # Raw status and both masked status registers
+            0xE5834034, 0xE593C004,                # Clear the software source
+            (3, 0x0bfffffc), 0xE5937000,
         ]))
         cp.write_bytes(program([
             (0, 0x08700019), 0xEE090F11, (1, 0x08700000), (2, 0x22), 0xE5812000,
@@ -286,6 +291,9 @@ class Smoke(unittest.TestCase):
         self.assertIn("r6=0x00000011", result.stdout)
         self.assertIn("AMSS external abort: unmapped read at 0x0bfffff8", result.stdout)
         self.assertIn("r8=0x0000005a", result.stdout)
+        for reg in (9, 10, 11):
+            self.assertIn(f"r{reg}=0x00000800", result.stdout)
+        self.assertIn("r12=0x00000000", result.stdout)
 
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})

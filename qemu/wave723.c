@@ -12,6 +12,7 @@
 #include "hw/core/boards.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev.h"
+#include "hw/core/sysbus.h"
 #include "system/address-spaces.h"
 #include "system/reset.h"
 #include "system/runstate.h"
@@ -90,6 +91,7 @@ struct Wave723State {
     Wave723Lcd lcd;
     Wave723OneNand nand;
     Wave723ModemIO modem_io;
+    Wave723Intc intc;
     QEMUTimer *deadline;
     int64_t limit;
     uint32_t reset_vector;
@@ -423,6 +425,7 @@ static void wave723_reset(void *opaque)
     wave723_lcd_reset(&s->lcd);
     wave723_onenand_reset(&s->nand);
     wave723_modem_io_reset(&s->modem_io);
+    if (s->modem.cpu) wave723_intc_reset(&s->intc);
     cpu_set_pc(CPU(s->primary.cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
 }
@@ -532,7 +535,15 @@ static void wave723_init(MachineState *machine)
     wave723_lcd_init(&s->lcd, OBJECT(machine), memory);
     wave723_onenand_init(&s->nand, OBJECT(machine), memory);
     if (dual) {
-        wave723_modem_io_init(&s->modem_io, OBJECT(machine), memory, &s->modem.view);
+        wave723_intc_init(&s->intc, OBJECT(machine), memory, DEVICE(s->primary.cpu),
+                          DEVICE(s->modem.cpu));
+        wave723_modem_io_init(&s->modem_io, OBJECT(machine), memory, &s->intc);
+        DeviceState *dma = qdev_new("pl080");
+        object_property_set_link(OBJECT(dma), "downstream", OBJECT(memory), &error_fatal);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(dma), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dma), 0, 0x08020000);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dma), 0,
+                           qemu_allocate_irq(wave723_intc_set, &s->intc, 20));
     }
     if ((s->diagnostic && s->reset_vector == AMSS_BASE) || dual) {
         Wave723Core *cp = dual ? &s->modem : &s->primary;
