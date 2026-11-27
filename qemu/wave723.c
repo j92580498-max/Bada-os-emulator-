@@ -20,6 +20,7 @@
 #include "target/arm/cpu.h"
 #include "target/arm/arm-powerctl.h"
 #include "wave723_gpt.h"
+#include "wave723_dsp.h"
 #include "wave723_lcd.h"
 #include "wave723_modem.h"
 #include "wave723_onenand.h"
@@ -82,6 +83,8 @@ struct Wave723State {
     MemoryRegion arm9_sleep_reg;
     uint32_t arm9_sleep;
     MemoryRegion diagnostic_stack;
+    MemoryRegion watchdog_control[2];
+    uint16_t watchdog_config[2];
     MemoryRegion modem_code_sram;
     MemoryRegion high_sram;
     MemoryRegion diagnostic_startup_data;
@@ -89,6 +92,7 @@ struct Wave723State {
     Wave723OneNand nand;
     Wave723ModemIO modem_io;
     Wave723Intc intc;
+    Wave723Dsp dsp;
     QEMUTimer *deadline;
     int64_t limit;
     uint32_t reset_vector;
@@ -167,6 +171,9 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
             const uint8_t *ram = memory_region_get_ram_ptr(s->parent_obj.ram);
             printf("\nAMSS shared table: signature 0x%08x, entries %u",
                    ldl_le_p(ram + 0xb4000), ldl_le_p(ram + 0xb4004));
+            printf("\nDSP: %" PRIu64 " mailbox commands consumed", s->dsp.consumed);
+            if (s->dsp.checksum_requested) printf(", ROM checksum pending");
+            if (s->dsp.blocked) printf(", waiting on command 0x%04x", s->dsp.blocked_command);
             printf("\nLCD: %" PRIu64 " pixels, sleep-out %u, display-on %u",
                    s->lcd.writes, s->lcd.awake, s->lcd.display_on);
         }
@@ -325,6 +332,28 @@ static const MemoryRegionOps wave723_reg32_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+/* DOGCR startup writes configure the interrupt/deep-sleep bits with EN clear. */
+static uint64_t watchdog_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return *(uint16_t *)opaque;
+}
+
+static void watchdog_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    Wave723State *s = WAVE723_MACHINE(qdev_get_machine());
+    if (value & 0x8000) {
+        unsigned index = (uint16_t *)opaque - s->watchdog_config;
+        wave723_finish(s, "watchdog enable", 0x088a0000 + 0x10 * index, size, &value);
+        return;
+    }
+    *(uint16_t *)opaque = value & 0x71ff;
+}
+
+static const MemoryRegionOps watchdog_ops = {
+    .read = watchdog_read, .write = watchdog_write, .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+};
+
 static uint64_t wave723_sleep_read(void *opaque, hwaddr offset, unsigned size)
 {
     return ((Wave723State *)opaque)->arm9_sleep;
@@ -393,12 +422,16 @@ static void wave723_reset(void *opaque)
     s->dsp_clock = 0;
     s->arm9_sleep = 0;
     s->pin_config = 0;
+    memset(s->watchdog_config, 0, sizeof(s->watchdog_config));
     s->survey_count = 0;
     memset(s->survey_regs, 0, sizeof(s->survey_regs));
     wave723_lcd_reset(&s->lcd);
     wave723_onenand_reset(&s->nand);
     wave723_modem_io_reset(&s->modem_io);
-    if (s->modem.cpu) wave723_intc_reset(&s->intc);
+    if (s->modem.cpu) {
+        wave723_intc_reset(&s->intc);
+        wave723_dsp_reset(&s->dsp);
+    }
     wave723_gpt_reset(&s->gpt);
     cpu_set_pc(CPU(s->primary.cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
@@ -513,6 +546,17 @@ static void wave723_init(MachineState *machine)
         wave723_intc_init(&s->intc, OBJECT(machine), memory, DEVICE(s->primary.cpu),
                           DEVICE(s->modem.cpu));
         wave723_modem_io_init(&s->modem_io, OBJECT(machine), memory, &s->intc);
+        wave723_dsp_init(&s->dsp, machine->ram, &s->intc);
+        for (unsigned i = 0; i < 2; ++i) {
+            const hwaddr base = 0x088a0020 + i * 0x10000;
+            sysbus_create_simple("wave723-bsc", base,
+                                 qemu_allocate_irq(wave723_intc_set, &s->intc, i ? 13 : 7));
+            memory_region_init_io(&s->watchdog_control[i], OBJECT(machine), &watchdog_ops,
+                                  &s->watchdog_config[i], i ? "apps-dogcr" : "modem-dogcr", 2);
+            memory_region_add_subregion(memory, 0x088a0000 + i * 0x10, &s->watchdog_control[i]);
+        }
+        sysbus_create_simple("wave723-gpio", 0x088ce000,
+                             qemu_allocate_irq(wave723_intc_set, &s->intc, 6));
         DeviceState *dma = qdev_new("pl080");
         object_property_set_link(OBJECT(dma), "downstream", OBJECT(memory), &error_fatal);
         sysbus_realize_and_unref(SYS_BUS_DEVICE(dma), &error_fatal);

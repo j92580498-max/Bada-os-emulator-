@@ -17,6 +17,7 @@ static const ConfigRange config_ranges[] = {
     { "bus-master-priority", 0x08010010, 15, UINT32_MAX },
     { "dsp-shared-memory-config", 0x08130000, 4, UINT32_MAX },
     { "dsp-dma-config", 0x08138000, 2, UINT32_MAX },
+    { "ap-power-modes", 0x081401f4, 1, UINT32_MAX },
     { "rf-clock-config", 0x08169400, 1, 0x7f7fffff },
     { "rf-enable-config", 0x08169408, 1, 0xff7f7f01 },
     { "rf-read-enable-config", 0x0816940c, 1, 0x007f7f11 },
@@ -26,7 +27,17 @@ static const ConfigRange config_ranges[] = {
     { "uart-a-control", 0x08820100, 1, UINT32_MAX },
     { "uart-a-fifo-control", 0x08820108, 1, UINT32_MAX },
     { "uart-b-control", 0x08821100, 1, UINT32_MAX },
+    { "syscfg-iocr0", 0x08880000, 1, UINT32_MAX },
+    { "syscfg-iocr2", 0x0888000c, 1, ~0x00003000u },
     { "oak-phase", 0x08880014, 1, UINT32_MAX },
+    { "syscfg-iocr5", 0x08880024, 1, ~0x06003000u },
+    { "syscfg-peripheral-reset", 0x08880030, 1, 0x40000001 },
+    { "syscfg-anacr6", 0x08880098, 1, ~0xfff9f800u },
+    { "syscfg-anacr10", 0x088800a8, 1, ~0x80203fc0u },
+    { "crypto-ahb-clock", 0x08880110, 1, 1 },
+    { "des-ahb-clock", 0x08880144, 1, 1 },
+    { "rng-ahb-clock", 0x08880150, 1, 1 },
+    { "syscfg-iocr10", 0x08880204, 1, 0xac000000 },
 };
 
 struct Wave723ConfigBank {

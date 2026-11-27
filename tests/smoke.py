@@ -88,6 +88,17 @@ def tcm_image():
     return data
 
 
+def arm_program(instructions):
+    # A tuple emits a PC-relative literal load. All other entries are ARM words.
+    words = list(instructions)
+    for i, instruction in enumerate(instructions):
+        if isinstance(instruction, tuple):
+            reg, value = instruction
+            words[i] = 0xE59F0000 | (reg << 12) | (4 * (len(words) - i - 2))
+            words.append(value)
+    return struct.pack(f"<{len(words)}I", *words)
+
+
 class Smoke(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -243,19 +254,23 @@ class Smoke(unittest.TestCase):
             self.write({**files, "firmware.csc": broken})
             self.assertIn(error, self.execute("boot", str(png), "128", status=1))
 
-    def test_modem_starts_from_mailbox_and_has_private_tcm(self):
-        # (register, value) emits an ARM literal load. Other entries are opcodes.
-        def program(instructions):
-            words = list(instructions)
-            for i, instruction in enumerate(instructions):
-                if isinstance(instruction, tuple):
-                    reg, value = instruction
-                    words[i] = 0xE59F0000 | (reg << 12) | (4 * (len(words) - i - 2))
-                    words.append(value)
-            return struct.pack(f"<{len(words)}I", *words)
-
+    def run_dual_guest(self, apps, modem):
         ap, cp = self.path.with_name("ap.bin"), self.path.with_name("cp.bin")
-        ap.write_bytes(program([
+        ap.write_bytes(arm_program(apps))
+        cp.write_bytes(arm_program(modem))
+        engine = CLI.with_name("qemu-system-arm.exe" if os.name == "nt" else "qemu-system-arm")
+        result = subprocess.run(
+            [os.environ.get("WAVE723_QEMU", str(engine)), "-M", "wave723", "-m", "32M",
+             "-smp", "2", "-accel", "tcg,thread=single", "-icount", "shift=0,sleep=off",
+             "-nodefaults", "-display", "none", "-monitor", "none", "-serial", "none",
+             "-kernel", str(ap), "-initrd", str(cp), "-append", "diagnostic:apps:2000000"],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def test_modem_starts_from_mailbox_and_has_private_tcm(self):
+        trace = self.run_dual_guest([
             (0, 0x08700015), 0xEE090F11, (1, 0x08700000), (2, 0x11), 0xE5812000,
             (3, 0xffff0020), (4, 0x80300000), 0xE5834000,  # Publish modem reset vector
             (3, 0x08810038), (4, 6), 0xE5834000,           # Release modem
@@ -271,8 +286,7 @@ class Smoke(unittest.TestCase):
             0xE5910000, 0xE1100002, 0x0AFFFFFC,    # Poll the actual timer IRQ
             (4, 1), 0xE5834000, 0xE5912000,        # Acknowledge the timer and stop it
             (3, 0x0bfffffc), 0xE5937000,
-        ]))
-        cp.write_bytes(program([
+        ], [
             (0, 0x08700019), 0xEE090F11, (1, 0x08700000), (2, 0x22), 0xE5812000,
             (7, 0x1d), 0xEE097F31, (6, 0x10),             # Low vectors in AMSS ITCM
             (7, 0xE3A0805A), 0xE5867000,                   # Data abort handler sets r8
@@ -280,27 +294,39 @@ class Smoke(unittest.TestCase):
             (3, 0x0bfffff8), 0xE5937000,                   # Raise a real external data abort
             (3, 0x800b4000), 0xE5838004,                   # Publish the handler's marker
             (3, 0x800b4000), 0xE5812000, 0xE5914000, 0xE5834000, 0xEAFFFFFE,
-        ]))
-        engine = CLI.with_name("qemu-system-arm.exe" if os.name == "nt" else "qemu-system-arm")
-        result = subprocess.run(
-            [os.environ.get("WAVE723_QEMU", str(engine)), "-M", "wave723", "-m", "32M",
-             "-smp", "2", "-accel", "tcg,thread=single", "-icount", "shift=0,sleep=off",
-             "-nodefaults", "-display", "none", "-monitor", "none", "-serial", "none",
-             "-kernel", str(ap), "-initrd", str(cp), "-append", "diagnostic:apps:2000000"],
-            capture_output=True, text=True, timeout=30,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("AMSS released at 0x80300000", result.stdout)
-        self.assertIn("unmapped read at 0x0bfffffc", result.stdout)
-        self.assertIn("r5=0x00000022", result.stdout)
-        self.assertIn("r6=0x00000011", result.stdout)
-        self.assertIn("AMSS external abort: unmapped read at 0x0bfffff8", result.stdout)
-        self.assertIn("r8=0x0000005a", result.stdout)
+        ])
+        self.assertIn("AMSS released at 0x80300000", trace)
+        self.assertIn("unmapped read at 0x0bfffffc", trace)
+        self.assertIn("r5=0x00000022", trace)
+        self.assertIn("r6=0x00000011", trace)
+        self.assertIn("AMSS external abort: unmapped read at 0x0bfffff8", trace)
+        self.assertIn("r8=0x0000005a", trace)
         for reg in (9, 10, 11):
-            self.assertIn(f"r{reg}=0x00000800", result.stdout)
-        self.assertIn("r12=0x00000000", result.stdout)
-        self.assertIn("r0=0x00000800", result.stdout)
-        self.assertIn("r2=0x00000000", result.stdout)
+            self.assertIn(f"r{reg}=0x00000800", trace)
+        self.assertIn("r12=0x00000000", trace)
+        self.assertIn("r0=0x00000800", trace)
+        self.assertIn("r2=0x00000000", trace)
+
+    def test_dsp_command_ring_and_board_io(self):
+        trace = self.run_dual_guest([
+            (0, 0x8000c000),
+            (1, 0x1234000c), 0xe5801000, (1, 0xbeef), 0xe5801004,  # WRITE
+            (1, 0x1234000b), 0xe5801008, (1, 0x4567), 0xe580100c,  # READ
+            (1, 0x7654000e), 0xe5801010,                          # SYNC
+            (1, 0x9999), 0xe5801018, (1, 4), 0xe5801400,         # Unsupported command
+            (1, 0x08810024), (2, 1), 0xe5812000,                  # Ring the doorbell
+            0xe5903400, 0xe5904404, 0xe5905408, 0xe590640c, 0xe5907504,
+            (0, 0x088a0020), (1, 3), 0xe5c01000,                 # BSC start
+            (1, 0xa1), 0xe5c01008, 0xe5d08028,                   # No slave at 0x50
+            (1, 9), 0xe5c01028, 0xe5d09028,                      # Clear DONE and NOACK
+            (0, 0x088ce000), (1, 2), 0xe5801008,                  # GPIO32 is an output
+            (1, 1), 0xe5801014, 0xe590a01c,                       # Read back its level
+            (0, 0x0bfffffc), 0xe5900000,
+        ], [0xeafffffe])
+        self.assertIn("3 mailbox commands consumed, waiting on command 0x9999", trace)
+        for reg, value in enumerate([0x00030004, 0x12340003, 0xbeef4567,
+                                     0x76540004, 2, 9, 0, 1], start=3):
+            self.assertIn(f"r{reg}=0x{value:08x}", trace)
 
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})

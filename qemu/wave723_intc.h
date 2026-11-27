@@ -17,6 +17,7 @@ typedef struct Wave723IrqBank {
 struct Wave723Intc {
     Wave723IrqBank bank[3];
     qemu_irq irq[2], fiq[2];
+    qemu_irq rip;
     uint32_t protect, control;
 };
 

@@ -108,7 +108,12 @@ static void intc_write(void *opaque, hwaddr offset, uint64_t value, unsigned siz
         case 0x00: bank->enable[0] = value; break;
         case 0x08: bank->edge &= ~value; break;
         case 0x20: if (!bank->index) bank->controller->protect = value & 1; break;
-        case 0x24: if (!bank->index) bank->controller->control = value & 0xffef; break;
+        case 0x24:
+            if (!bank->index) {
+                bank->controller->control = value & 0xffee;
+                if (value & 1) qemu_irq_pulse(bank->controller->rip);
+            }
+            break;
         case 0x28: bank->fiq_select[0] = value; break;
         case 0x2c: bank->fiq_select[1] = value; break;
         case 0x30: bank->software |= value; break;

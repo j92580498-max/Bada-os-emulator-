@@ -17,6 +17,18 @@ ram = int(gdb.parse_and_eval('$ram'))
 inferior = gdb.selected_inferior()
 def read_guest(address, length):
     return bytes(inferior.read_memory(ram + address - 0x80000000, length))
+ap = gdb.parse_and_eval('$wave->primary.cpu->env')
+cp15 = ap['cp15']
+sctlr = int(cp15['sctlr_el'][1])
+ttbr0 = int(cp15['ttbr0_el'][1])
+ttbr1 = int(cp15['ttbr1_el'][1])
+print('APPS SCTLR %#x TTBR0 %#x TTBR1 %#x FCSE PID %#x' %
+      (sctlr, ttbr0, ttbr1, int(cp15['fcseidr_ns'])))
+if 0x80000000 <= (ttbr0 & ~0x3fff) <= 0x8fffc000:
+    for va in (0x04ffffe8, int(ap['regs'][0]), int(ap['regs'][15])):
+        slot = (ttbr0 & ~0x3fff) + 4 * (va >> 20)
+        desc, = struct.unpack('<I', read_guest(slot, 4))
+        print('TTBR0 first-level descriptor for %#x at %#x: %#x' % (va, slot, desc))
 pg5, = struct.unpack('<I', read_guest(0x808b4334, 4))
 print('AMSS page 5 shared memory:', hex(pg5))
 if 0x80000000 <= pg5 < 0x8ffff000:
