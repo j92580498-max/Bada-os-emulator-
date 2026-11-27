@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -20,7 +21,9 @@ constexpr auto lineColumns = 105;
 
 const SDL_FRect openButton{24, 69, 125, 37};
 const SDL_FRect traceButton{161, 69, 146, 37};
+const SDL_FRect logoButton{319, 69, 129, 37};
 const SDL_FRect panel{24, 123, 872, 427};
+const SDL_FRect lcd{340, 136, wave723::PanelFrame::width, wave723::PanelFrame::height};
 
 // SDL may deliver a file dialog result on a different thread.
 std::mutex dialogMutex;
@@ -52,9 +55,11 @@ void button(SDL_Renderer* renderer, const SDL_FRect& rect, const char* label, bo
 struct App {
     std::filesystem::path firmware;
     std::vector<std::string> lines{"Open or drop a Wave 723 firmware ZIP."};
+    std::unique_ptr<SDL_Texture, decltype(&SDL_DestroyTexture)> screen{nullptr, SDL_DestroyTexture};
     int scroll = 0;
 
     void show(const std::string& message) {
+        screen.reset();
         lines.clear();
         scroll = 0;
         std::istringstream stream(message);
@@ -87,6 +92,22 @@ struct App {
         }
     }
 
+    void showLogo(SDL_Renderer* renderer) {
+        if (firmware.empty()) return;
+        try {
+            const auto frame = wave723::renderBootLogo(firmware);
+            show("");
+            screen.reset(SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24,
+                                           SDL_TEXTUREACCESS_STATIC, frame.width, frame.height));
+            if (!screen || !SDL_UpdateTexture(screen.get(), nullptr, frame.rgb.data(),
+                                              frame.width * 3)) {
+                throw std::runtime_error(SDL_GetError());
+            }
+        } catch (const std::exception& error) {
+            show(error.what());
+        }
+    }
+
     void draw(SDL_Renderer* renderer) const {
         color(renderer, 15, 23, 34);
         SDL_RenderClear(renderer);
@@ -96,11 +117,17 @@ struct App {
         SDL_RenderDebugText(renderer, 24, 43, "Firmware and reset trace");
         button(renderer, openButton, "Open ZIP", true);
         button(renderer, traceButton, "Trace reset", !firmware.empty());
+        button(renderer, logoButton, "Boot logo", !firmware.empty());
         color(renderer, 22, 34, 49);
         SDL_RenderFillRect(renderer, &panel);
         color(renderer, 211, 225, 239);
-        for (int row = 0; row < visibleLines && row + scroll < static_cast<int>(lines.size()); ++row) {
-            SDL_RenderDebugText(renderer, 37, 136.0f + row * 17, lines[row + scroll].c_str());
+        if (screen) {
+            SDL_RenderTexture(renderer, screen.get(), nullptr, &lcd);
+            SDL_RenderDebugText(renderer, 37, 138, "QEMU LCD capture");
+        } else {
+            for (int row = 0; row < visibleLines && row + scroll < static_cast<int>(lines.size()); ++row) {
+                SDL_RenderDebugText(renderer, 37, 136.0f + row * 17, lines[row + scroll].c_str());
+            }
         }
         SDL_RenderPresent(renderer);
     }
@@ -152,6 +179,8 @@ int main(int argc, char** argv) {
                     SDL_ShowOpenFileDialog(filePicked, nullptr, window, filters, 1, nullptr, false);
                 } else if (contains(traceButton, event.button.x, event.button.y)) {
                     app.trace();
+                } else if (contains(logoButton, event.button.x, event.button.y)) {
+                    app.showLogo(renderer);
                 }
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
@@ -176,6 +205,7 @@ int main(int argc, char** argv) {
         app.draw(renderer);
     }
 
+    app.screen.reset();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

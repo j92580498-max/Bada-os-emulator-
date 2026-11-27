@@ -4,11 +4,21 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 from pathlib import Path
 
 
 CLI = Path(sys.argv.pop(1)).resolve()
 APPS_CIPHER = Path(__file__).parent / "fixtures" / "apps-reset.hex"
+
+
+def lcd_rc2():
+    offset, width, height = 0x41000, 240, 400
+    frame = (struct.pack("<H", 0xF800) * (width * height // 2) +
+             struct.pack("<H", 0x001F) * (width * height // 2))
+    resource = bytearray(offset)
+    struct.pack_into("<4I", resource, 0x40000, 0x5A5B5C5D, 0x40000, offset, len(frame))
+    return resource + frame
 
 
 def amss_image(thumb=False):
@@ -122,6 +132,24 @@ class Smoke(unittest.TestCase):
         self.assertIn("Write value 0x0000002b", report)
         self.assertIn("r2=0x08700015", report)
         self.assertIn("r3=0xffff0015", report)
+
+    def test_guest_draws_rc2_bitmap(self):
+        self.write({"Resources (Low).rc2": lcd_rc2()})
+        image = self.path.with_suffix(".png")
+        self.assertIn("Saved QEMU LCD capture", self.execute("boot-logo", str(image)))
+        data = image.read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(struct.unpack_from(">IIBB", data, 16), (240, 400, 8, 2))
+        chunks = []
+        position = 8
+        while position < len(data):
+            length, kind = struct.unpack_from(">I4s", data, position)
+            if kind == b"IDAT":
+                chunks.append(data[position + 8:position + 8 + length])
+            position += length + 12
+        decoded = zlib.decompress(b"".join(chunks))
+        self.assertEqual(decoded, (b"\x00" + bytes((255, 0, 0)) * 240) * 200 +
+                                  (b"\x00" + bytes((0, 0, 255)) * 240) * 200)
 
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})

@@ -2,9 +2,10 @@
 
 Experimental Samsung Wave 723 (GT-S7230/E, Broadcom BCM2156) emulation for
 Android, Windows, and Linux. The current milestone is firmware inspection and
-execution of the AMSS and APPS ARM reset vectors in QEMU. It stops at the first unsupported memory
-access, CPU error, or instruction limit and reports the CPU state. Bada does
-not boot yet. Display, touchscreen, storage and bootloader emulation are pending.
+execution of the AMSS and APPS ARM reset vectors in QEMU. The first display
+milestone runs a small ARM display program that sends the firmware's startup
+logo through the emulated LCD interface. Bada boot, the stock LCD driver,
+touchscreen and storage are still in bring-up.
 
 ## Run
 
@@ -14,10 +15,11 @@ Download a package from a successful [Build and test run](https://github.com/j92
   and select the Wave 723 firmware ZIP. Tap **Trace reset** to execute AMSS.
 - Windows x86-64 and Linux x86-64 or ARM64. Extract the package and launch
   `wave723-ui` (`wave723-ui.exe` on Windows). Open or drop the firmware ZIP into
-  the window. The command-line tool provides the same data for scripting.
+  the window and choose **Boot logo** to see QEMU's LCD capture.
 
 ```sh
 ./wave723 inspect /path/to/S7230EXXKG1_OXGKG2.zip
+./wave723 boot-logo /path/to/S7230EXXKG1_OXGKG2.zip wave723-logo.png
 ./wave723 trace /path/to/S7230EXXKG1_OXGKG2.zip 100000
 ./wave723 trace-apps /path/to/S7230EXXKG1_OXGKG2.zip 100000
 ```

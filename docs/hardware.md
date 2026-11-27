@@ -48,6 +48,20 @@ corresponding to 16 KiB DTCM and 16 KiB ITCM at those bases. The APPS probe
 uses those sizes.
 Booting bada requires further board emulation.
 
+## First LCD frame
+
+The XXKG1 RC2 resource has a table at file offset `0x40000`. Its first
+bitmap begins at `0x41000` and contains 192,000 bytes of little-endian RGB565
+pixels in a 240×400 frame. The display bring-up program in the ARM guest reads
+that bitmap and sends DCS sleep-out, pixel format, memory write and display-on
+commands through QEMU. The host displays or saves QEMU's resulting frame.
+
+The LCD model uses the BCM21553 reference PIO register layout. The command,
+data and status registers are at offsets `0x00`, `0x04` and `0x1c` from
+`0x08030000`. The model implements RGB565 panel memory, addressing windows and
+display enable. DMA and stock firmware display initialization remain pending.
+[Broadcom LCD register definitions](https://github.com/MoltenMotherBoard/platform_kernel_samsung_cori/blob/733fd4478845a1125715f5a05eaf8847d49bafd0/drivers/video/broadcom/dss/bcm215xx/reg_lcdc.h)
+
 ## Source research
 
 - LightTouch provided the reference for a firmware-driven workflow with host

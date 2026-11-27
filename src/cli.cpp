@@ -17,6 +17,7 @@ static int run(int argc, const Arg::value_type* const* argv) {
     using namespace wave723;
     if (argc == 2 && Arg(argv[1]) == NATIVE("--help")) {
         std::cout << "Usage: wave723 inspect FIRMWARE.zip\n"
+                     "       wave723 boot-logo FIRMWARE.zip OUTPUT.png\n"
                      "       wave723 trace FIRMWARE.zip [INSTRUCTION_LIMIT] [--diagnostic]\n"
                      "       wave723 trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT] [--diagnostic]\n";
         return 0;
@@ -27,6 +28,12 @@ static int run(int argc, const Arg::value_type* const* argv) {
             return 0;
         }
         const Arg action = argc > 1 ? Arg(argv[1]) : Arg{};
+        if (argc == 4 && action == NATIVE("boot-logo")) {
+            const auto frame = renderBootLogo(std::filesystem::path(argv[2]));
+            savePanelPng(frame, std::filesystem::path(argv[3]));
+            std::cout << "Saved QEMU LCD capture (240x400).\n";
+            return 0;
+        }
         const bool diagnostic = argc >= 4 && Arg(argv[argc - 1]) == NATIVE("--diagnostic");
         const int arguments = argc - diagnostic;
         if ((arguments == 3 || arguments == 4) &&
@@ -45,7 +52,7 @@ static int run(int argc, const Arg::value_type* const* argv) {
                                                         : traceReset(path, limit, {}, diagnostic));
             return 0;
         }
-        std::cerr << "Usage: wave723 inspect|trace|trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT] [--diagnostic]\n";
+        std::cerr << "Run wave723 --help for usage.\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "wave723: " << error.what() << '\n';

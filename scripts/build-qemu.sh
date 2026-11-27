@@ -13,15 +13,17 @@ build_dir=$(cd "$2" && pwd)
 platform=$3
 binary=qemu-system-arm
 
-cp "$project_root/qemu/wave723.c" "$source_dir/hw/arm/wave723.c"
+cp "$project_root/qemu/wave723.c" "$project_root/qemu/wave723_lcd.c" \
+   "$project_root/qemu/wave723_lcd.h" "$source_dir/hw/arm/"
 if ! grep -q 'config WAVE723' "$source_dir/hw/arm/Kconfig"; then
     cat >> "$source_dir/hw/arm/Kconfig" <<'KCONFIG'
 
 config WAVE723
     bool
 KCONFIG
-    echo "arm_ss.add(when: 'CONFIG_WAVE723', if_true: files('wave723.c'))" >> "$source_dir/hw/arm/meson.build"
 fi
+sed -i "/^arm_ss.add(when: 'CONFIG_WAVE723', if_true:/d" "$source_dir/hw/arm/meson.build"
+echo "arm_ss.add(when: 'CONFIG_WAVE723', if_true: files('wave723.c', 'wave723_lcd.c'))" >> "$source_dir/hw/arm/meson.build"
 printf 'CONFIG_WAVE723=y\n' > "$source_dir/configs/devices/arm-softmmu/default.mak"
 
 args=(

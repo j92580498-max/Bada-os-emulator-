@@ -10,6 +10,7 @@
 #include <array>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -122,6 +123,38 @@ public:
         return extract(info, "Could not decompress and verify amss.bin");
     }
 
+    mz_zip_archive_file_stat find(std::string_view part, const std::string& name) {
+        mz_zip_archive_file_stat result{};
+        bool found = false;
+        const auto entries = count();
+        for (mz_uint index = 0; index < entries; ++index) {
+            const auto entry = stat(index);
+            if (entry.m_is_directory || role(entry.m_filename) != part) continue;
+            if (found) throw std::runtime_error("The ZIP contains multiple " + name + " files.");
+            result = entry;
+            found = true;
+        }
+        if (!found) throw std::runtime_error("The ZIP does not contain " + name + ".");
+        return result;
+    }
+
+    std::vector<std::uint8_t> bootLogo() {
+        constexpr std::size_t table = 0x40000;
+        constexpr std::size_t size = PanelFrame::width * PanelFrame::height * 2;
+        const auto entry = find("RSRC2", "RC2 resource");
+        if (entry.m_uncomp_size < table + 16 + size || entry.m_uncomp_size > 16 * 1024 * 1024) {
+            throw std::runtime_error("The RC2 resource is outside the supported size range.");
+        }
+        const auto image = extract(entry, "Could not decompress and verify the RC2 resource");
+        const auto* fields = image.data() + table;
+        const auto offset = word(fields + 8);
+        if (word(fields) != 0x5a5b5c5d || word(fields + 4) != table ||
+            word(fields + 12) != size || offset < table + 16 || offset > image.size() - size) {
+            throw std::runtime_error("The RC2 resource has no supported 240x400 startup bitmap.");
+        }
+        return {image.begin() + offset, image.begin() + offset + size};
+    }
+
     std::vector<std::uint8_t> appsResetImage(const mz_zip_archive_file_stat& info) {
         if (info.m_uncomp_size < flashFooterSize + appsResetLiteral + 4 ||
             info.m_uncomp_size > maxAppsSize) {
@@ -187,6 +220,14 @@ void writeName(std::ostream& out, std::string_view name) {
     }
 }
 
+std::filesystem::path temporaryDirectory(const std::filesystem::path& path) {
+#ifdef __ANDROID__
+    return path.parent_path();
+#else
+    return std::filesystem::temp_directory_path();
+#endif
+}
+
 std::string traceImage(const std::filesystem::path& path, ResetTarget target,
                        std::uint32_t instructionLimit, const std::filesystem::path& qemu,
                        bool diagnostic) {
@@ -197,19 +238,7 @@ std::string traceImage(const std::filesystem::path& path, ResetTarget target,
     const std::string_view part = apps ? "APPS" : "AMSS";
     const std::string filename = apps ? "apps_compressed.bin" : "amss.bin";
     Archive archive(path);
-    std::vector<mz_uint> candidates;
-    for (mz_uint index = 0; index < archive.count(); ++index) {
-        const auto entry = archive.stat(index);
-        if (!entry.m_is_directory && role(entry.m_filename) == part) {
-            candidates.push_back(index);
-        }
-    }
-    if (candidates.empty()) throw std::runtime_error("The ZIP does not contain " + filename + ".");
-    if (candidates.size() != 1) {
-        throw std::runtime_error("The ZIP contains multiple " + filename + " files.");
-    }
-
-    const auto entry = archive.stat(candidates.front());
+    const auto entry = archive.find(part, filename);
     const auto bytes = apps ? archive.appsResetImage(entry) : archive.image(entry);
     if (apps && (word(bytes.data()) != appsResetLoad || word(bytes.data() + 4) != appsResetLoad)) {
         throw std::runtime_error("Unsupported APPS reset header. Expected the XXKG1 vector layout.");
@@ -222,15 +251,61 @@ std::string traceImage(const std::filesystem::path& path, ResetTarget target,
     if ((handler & 3) || handler < base || handler - base >= bytes.size() - 3) {
         throw std::runtime_error(std::string(part) + " reset handler points outside the staged image.");
     }
-#ifdef __ANDROID__
-    const auto temporaryDirectory = path.parent_path();
-#else
-    const auto temporaryDirectory = std::filesystem::temp_directory_path();
-#endif
-    return runReset(target, bytes, handler, instructionLimit, qemu, temporaryDirectory, diagnostic);
+    return runReset(target, bytes, handler, instructionLimit, qemu, temporaryDirectory(path),
+                    diagnostic);
 }
 
 }  // namespace
+
+PanelFrame renderBootLogo(const std::filesystem::path& path, const std::filesystem::path& qemu) {
+    Archive archive(path);
+    const auto bitmap = archive.bootLogo();
+    constexpr auto pixels = PanelFrame::width * PanelFrame::height;
+    constexpr std::array<std::uint32_t, 20> program{
+        0xe59f0040,                   // ldr r0, LCD controller address
+        0xe28f1044,                   // adr r1, first RGB565 pixel
+        0xe59f203c,                   // ldr r2, pixel count
+        0xe3a03011, 0xe5803000,       // Sleep out
+        0xe3a0303a, 0xe5803000,       // Set pixel format
+        0xe3a03055, 0xe5803004,       // RGB565
+        0xe3a0302c, 0xe5803000,       // Begin GRAM write
+        0xe0d130b2,                   // loop: ldrh r3, [r1], #2
+        0xe5803004,                   // str r3, [r0, #4]
+        0xe2522001, 0x1afffffb,       // subs r2, r2, #1; bne loop
+        0xe3a03029, 0xe5803000,       // Display on
+        0xeafffffe,                   // b .
+        0x08030000, pixels,
+    };
+    std::vector<std::uint8_t> image;
+    image.reserve(program.size() * 4 + bitmap.size());
+    for (const auto opcode : program) {
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            image.push_back(static_cast<std::uint8_t>(opcode >> shift));
+        }
+    }
+    image.insert(image.end(), bitmap.begin(), bitmap.end());
+    PanelFrame frame;
+    runReset(ResetTarget::Amss, image, amssBase, 4 * pixels + 32, qemu,
+             temporaryDirectory(path), false, &frame);
+    return frame;
+}
+
+void savePanelPng(const PanelFrame& frame, const std::filesystem::path& path) {
+    constexpr int channels = 3;
+    if (frame.rgb.size() != PanelFrame::width * PanelFrame::height * channels) {
+        throw std::runtime_error("Invalid LCD frame size.");
+    }
+    std::size_t size = 0;
+    std::unique_ptr<void, decltype(&mz_free)> png(
+        tdefl_write_image_to_png_file_in_memory(frame.rgb.data(), PanelFrame::width,
+                                               PanelFrame::height, channels, &size),
+        mz_free);
+    if (!png) throw std::runtime_error("Could not encode the LCD capture as PNG.");
+    std::ofstream output(path, std::ios::binary);
+    output.write(static_cast<const char*>(png.get()), size);
+    output.close();
+    if (!output) throw std::runtime_error("Could not save the LCD capture.");
+}
 
 std::string inspectFirmware(const std::filesystem::path& path) {
     Archive archive(path);

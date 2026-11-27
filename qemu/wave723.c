@@ -15,6 +15,7 @@
 #include "system/runstate.h"
 #include "target/arm/cpregs.h"
 #include "target/arm/cpu.h"
+#include "wave723_lcd.h"
 
 #define RAM_BASE 0x80000000
 #define AMSS_BASE 0x80300000
@@ -39,11 +40,13 @@ struct Wave723State {
     MemoryRegion unmapped;
     MemoryRegion ramctrl;
     MemoryRegion diagnostic_stack;
+    Wave723Lcd lcd;
     Wave723Tcm tcm[2];
     QEMUTimer *deadline;
     int64_t limit;
     uint32_t reset_vector;
     bool diagnostic;
+    bool capture_panel;
     bool reported_ramctrl;
     bool reported;
 };
@@ -91,6 +94,9 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
         return;
     }
     s->reported = true;
+    if (s->capture_panel && wave723_lcd_capture(&s->lcd, s->parent_obj.kernel_filename)) {
+        printf("LCD: %" PRIu64 " pixel writes\n", s->lcd.writes);
+    }
     printf("Stop: %s", reason);
     if (size) {
         printf(" at 0x%08" PRIx64 " (%u bytes)", (uint64_t)address, size);
@@ -171,6 +177,7 @@ static void wave723_reset(void *opaque)
     }
     s->reported = false;
     s->reported_ramctrl = false;
+    wave723_lcd_reset(&s->lcd);
     cpu_set_pc(CPU(s->cpu), s->reset_vector);
     timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
 }
@@ -184,6 +191,10 @@ static void wave723_init(MachineState *machine)
     char *end = NULL;
 
     s->reset_vector = AMSS_BASE;
+    if (limit && g_str_has_prefix(limit, "capture:")) {
+        s->capture_panel = true;
+        limit += strlen("capture:");
+    }
     if (limit && g_str_has_prefix(limit, "diagnostic:")) {
         s->diagnostic = true;
         limit += strlen("diagnostic:");
@@ -216,6 +227,7 @@ static void wave723_init(MachineState *machine)
     memory_region_init_io(&s->ramctrl, OBJECT(machine), &wave723_ramctrl_ops,
                           s, "wave723.syscfg-ramctrl", 4);
     memory_region_add_subregion(memory, SYSCFG_RAMCTRL, &s->ramctrl);
+    wave723_lcd_init(&s->lcd, OBJECT(machine), memory);
     if (s->diagnostic && s->reset_vector == AMSS_BASE) {
         /* The AMSS startup places its initial stack in this SRAM window. */
         memory_region_init_ram_flags_nomigrate(&s->diagnostic_stack, OBJECT(machine),
