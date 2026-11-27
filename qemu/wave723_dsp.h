@@ -8,6 +8,12 @@ typedef struct Wave723Dsp {
     MemoryRegion *ram;
     Wave723Intc *intc;
     uint16_t words[1 << 16];
+    struct {
+        uint16_t voice_tx[25], voice_rx[35];
+        uint16_t tx_count, rx_count;
+        uint16_t sidetone[10], echo[10];
+        uint16_t gpio_address, gpio_value, gpio_mask;
+    } audio;
     uint64_t consumed;
     uint16_t blocked_command;
     bool blocked, checksum_requested;

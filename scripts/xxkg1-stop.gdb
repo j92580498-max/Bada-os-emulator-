@@ -67,6 +67,18 @@ source = apps_text(4)
 message = apps_text(6)
 if source.endswith('.c') and message:
     print('APPS diagnostic: %s:%d: %s' % (source, int(ap['regs'][5]), message))
+print('IPC shared header:', [hex(i) for i in struct.unpack('<8I', read_guest(0x80f00000, 32))])
+for i in range(3):
+    bank = gdb.parse_and_eval('$wave->intc.bank[%d]' % i)
+    raw = int(bank['software']) | int(bank['edge'])
+    wired, pins = int(bank['wired']), int(bank['pins'])
+    for bit in range(32):
+        mask = 1 << bit
+        trigger = (int(bank['trigger'][bit // 8]) >> (4 * (bit % 8))) & 7
+        if wired & mask and (trigger == 0 and pins & mask or trigger == 1 and not pins & mask):
+            raw |= mask
+    print('IRQ bank %d: raw %#x, APPS enabled %#x, AMSS enabled %#x, AMSS FIQ select %#x' %
+          (i, raw, int(bank['enable'][0]), int(bank['enable'][1]), int(bank['fiq_select'][1])))
 pg5, = struct.unpack('<I', read_guest(0x808b4334, 4))
 print('DSP shared page pointers:', [hex(i) for i in struct.unpack('<7I', read_guest(0x808b4320, 28))])
 print('AMSS page 5 shared memory:', hex(pg5))

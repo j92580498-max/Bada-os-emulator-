@@ -181,6 +181,10 @@ static void wave723_finish(Wave723State *s, const char *reason, hwaddr address,
             printf("\nDSP: %" PRIu64 " mailbox commands consumed", s->dsp.consumed);
             if (s->dsp.checksum_requested) printf(", ROM checksum pending");
             if (s->dsp.blocked) printf(", waiting on command 0x%04x", s->dsp.blocked_command);
+            if (s->dsp.audio.tx_count || s->dsp.audio.rx_count) {
+                printf("\nDSP voice filters: %u / %u taps loaded",
+                       s->dsp.audio.tx_count, s->dsp.audio.rx_count);
+            }
             if (s->task_writes) {
                 printf("\nAPPS scheduler: %" PRIu64 " task pointer writes, last nonzero 0x%08x",
                        s->task_writes, s->last_task);

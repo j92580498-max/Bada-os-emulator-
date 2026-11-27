@@ -342,6 +342,19 @@ class Smoke(unittest.TestCase):
         self.assertIn("Guest soft reset 1, PUMR 0x03", trace)
         self.assertIn("r5=0x00000010", trace)
 
+    def test_dsp_voice_filter_load_wraps_at_the_last_command_slot(self):
+        trace = self.run_dual_guest([
+            (0, 0x8000c000), (1, 0x0019005c), 0xe58013f8,  # slot 127: 25/35 taps
+            (1, 35), 0xe58013fc,
+            (1, 0x001a005c), 0xe5801000,                    # slot 0: TX length exceeds bank
+            (1, 0x007f0001), 0xe5801400,                    # out=127, in=1
+            (1, 0x08810024), (2, 1), 0xe5812000,
+            0xe5903400, (0, 0x0bfffffc), 0xe5900000,
+        ], [0xeafffffe])
+        self.assertIn("1 mailbox commands consumed, waiting on command 0x005c", trace)
+        self.assertIn("DSP voice filters: 25 / 35 taps loaded", trace)
+        self.assertIn("r3=0x00000001", trace)
+
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})
         report = self.execute("trace", "128")
