@@ -81,6 +81,8 @@ struct Wave723State {
     uint32_t dsp_clock;
     MemoryRegion power_up_reg;
     uint32_t power_up_mode;
+    MemoryRegion startup_reg, soft_reset_reg;
+    unsigned soft_resets;
     MemoryRegion arm9_sleep_reg;
     uint32_t arm9_sleep;
     MemoryRegion diagnostic_stack;
@@ -98,6 +100,7 @@ struct Wave723State {
     Wave723Intc intc;
     Wave723Dsp dsp;
     QEMUTimer *deadline;
+    int64_t deadline_at;
     int64_t limit;
     uint32_t reset_vector;
     bool diagnostic;
@@ -422,6 +425,41 @@ static const MemoryRegionOps wave723_power_up_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 1 },
 };
 
+static uint64_t startup_status(void *opaque, hwaddr offset, unsigned size)
+{
+    Wave723State *s = opaque;
+    return s->soft_resets ? 0x10 : 0; /* SUCR.SRST_STAT */
+}
+
+static uint64_t soft_reset_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return 0;
+}
+
+static void soft_reset_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
+{
+    Wave723State *s = opaque;
+    if (value & 8) {
+        ++s->soft_resets;
+        if (s->diagnostic && s->soft_resets <= 4) {
+            printf("Guest soft reset %u, PUMR 0x%02x, APPS PC 0x%08x\n",
+                   s->soft_resets, s->power_up_mode, s->primary.cpu->env.regs[15]);
+        }
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
+static const MemoryRegionOps startup_ops = {
+    .read = startup_status, .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static const MemoryRegionOps soft_reset_ops = {
+    .read = soft_reset_read, .write = soft_reset_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+};
+
 static const MemoryRegionOps wave723_unmapped_ops = {
     .read_with_attrs = wave723_read,
     .write_with_attrs = wave723_write,
@@ -469,7 +507,10 @@ static void wave723_reset(void *opaque)
     }
     wave723_gpt_reset(&s->gpt);
     cpu_set_pc(CPU(s->primary.cpu), s->reset_vector);
-    timer_mod(s->deadline, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit);
+    if (!s->deadline_at) {
+        s->deadline_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->limit;
+    }
+    timer_mod(s->deadline, s->deadline_at);
 }
 
 static void wave723_init_core(Wave723Core *core, MachineState *machine,
@@ -578,6 +619,12 @@ static void wave723_init(MachineState *machine)
     wave723_lcd_init(&s->lcd, OBJECT(machine), memory);
     wave723_onenand_init(&s->nand, OBJECT(machine), memory);
     if (dual) {
+        memory_region_init_io(&s->startup_reg, OBJECT(machine), &startup_ops,
+                              s, "wave723.startup-status", 4);
+        memory_region_add_subregion(memory, 0x08880008, &s->startup_reg);
+        memory_region_init_io(&s->soft_reset_reg, OBJECT(machine), &soft_reset_ops,
+                              s, "wave723.soft-reset", 2);
+        memory_region_add_subregion(memory, 0x088e0000, &s->soft_reset_reg);
         wave723_intc_init(&s->intc, OBJECT(machine), memory, DEVICE(s->primary.cpu),
                           DEVICE(s->modem.cpu));
         wave723_modem_io_init(&s->modem_io, OBJECT(machine), memory, &s->intc);

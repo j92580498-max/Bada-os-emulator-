@@ -8,6 +8,8 @@ typedef struct Wave723ConfigBank Wave723ConfigBank;
 
 typedef struct Wave723ModemIO {
     Wave723ConfigBank *config;
+    MemoryRegion cipher, cipher_ram;
+    uint32_t cipher_config;
     MemoryRegion layer1;
     uint32_t layer1_enable[4];
     uint32_t layer1_pending[4];

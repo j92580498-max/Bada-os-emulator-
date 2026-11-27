@@ -331,6 +331,17 @@ class Smoke(unittest.TestCase):
                                      0x76540004, 2, 9, 0, 1], start=3):
             self.assertIn(f"r{reg}=0x{value:08x}", trace)
 
+    def test_guest_soft_reset_retains_the_powerup_latch(self):
+        trace = self.run_dual_guest([
+            (0, 0x08880018), 0xe5d01000, 0xe3510003, 0x0a000004,
+            (1, 3), 0xe5c01000, (0, 0x088e0000), 0xe3a02008,
+            0xe1c020b0,  # STRH to the chip reset register
+            (0, 0x08880008), 0xe5905000,
+            (0, 0x0bfffffc), 0xe5900000,
+        ], [0xeafffffe])
+        self.assertIn("Guest soft reset 1, PUMR 0x03", trace)
+        self.assertIn("r5=0x00000010", trace)
+
     def test_tcm_and_unmapped_stop(self):
         self.write({"amss.bin": tcm_image()})
         report = self.execute("trace", "128")

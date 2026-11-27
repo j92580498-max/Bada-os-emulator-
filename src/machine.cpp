@@ -194,11 +194,12 @@ std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
         "-M", "wave723", "-m", ramArg, "-accel",
         apps && panel ? "tcg,thread=single" : "tcg,thread=single,one-insn-per-tb=on",
         "-icount", "shift=0,sleep=off", "-nodefaults", "-display", "none",
-        "-monitor", "none", "-serial", "none", "-no-reboot",
+        "-monitor", "none", "-serial", "none",
         "-kernel", raw, "-append", guestOptions
     };
     const auto flash = workspace.path / "onenand.img";
     const bool hasFlash = fs::is_regular_file(flash);
+    if (!hasFlash || !panel) args.emplace_back("-no-reboot");
     const auto ind = workspace.path / "sysparm_ind.img";
     const auto dep = workspace.path / "sysparm_dep.img";
     const bool hasSysparms = fs::is_regular_file(ind);

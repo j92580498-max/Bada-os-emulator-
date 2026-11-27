@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "qemu/host-utils.h"
 #include "qemu/timer.h"
+#include "qapi/error.h"
 #include "wave723_modem.h"
 
 typedef struct ConfigRange {
@@ -25,6 +26,11 @@ static const ConfigRange config_ranges[] = {
     { "power-modes", 0x0814009c, 1, UINT32_MAX },
     { "pll-powerdown-enable", 0x081400a0, 1, 1 },
     { "ap-power-modes", 0x081401f4, 1, UINT32_MAX },
+    { "wcdma-pdm-output", 0x0816b100, 1, 0x00000f01 },
+    { "wcdma-pdm-mode", 0x0816b104, 1, 0x00000371 },
+    { "wcdma-gpio-pads", 0x0816c59c, 1, ~0xff8888ffu },
+    { "afc-pdm", 0x0816f048, 2, 0xfff },
+    { "afc-output-enable", 0x0816f050, 1, 0xf9 },
     { "rf-clock-config", 0x08169400, 1, 0x7f7fffff },
     { "rf-enable-config", 0x08169408, 1, 0xff7f7f01 },
     { "rf-read-enable-config", 0x0816940c, 1, 0x007f7f11 },
@@ -34,16 +40,20 @@ static const ConfigRange config_ranges[] = {
     { "uart-a-control", 0x08820100, 1, UINT32_MAX },
     { "uart-a-fifo-control", 0x08820108, 1, UINT32_MAX },
     { "uart-b-control", 0x08821100, 1, UINT32_MAX },
+    { "auxadc-startup-config", 0x08830020, 1, 0x00800000 },
     { "syscfg-iocr0", 0x08880000, 1, UINT32_MAX },
     { "syscfg-iocr2", 0x0888000c, 1, ~0x00003000u },
     { "oak-phase", 0x08880014, 1, UINT32_MAX },
     { "syscfg-iocr5", 0x08880024, 1, ~0x06003000u },
+    { "syscfg-iocr7", 0x0888002c, 1, ~0x0800004eu },
     { "syscfg-peripheral-reset", 0x08880030, 1, 0x40000001 },
     { "syscfg-anacr6", 0x08880098, 1, ~0xfff9f800u },
     { "syscfg-anacr10", 0x088800a8, 1, ~0x80203fc0u },
+    { "camera-ahb-clock", 0x08880104, 1, 1 },
     { "crypto-ahb-clock", 0x08880110, 1, 1 },
     { "des-ahb-clock", 0x08880144, 1, 1 },
     { "rng-ahb-clock", 0x08880150, 1, 1 },
+    { "cipher-clock", 0x08880190, 1, 1 },
     { "syscfg-iocr10", 0x08880204, 1, 0xac000000 },
 };
 
@@ -86,6 +96,29 @@ static uint64_t layer1_read(void *opaque, hwaddr offset, unsigned size)
     default: return 0;
     }
 }
+
+static uint64_t cipher_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return ((Wave723ModemIO *)opaque)->cipher_config;
+}
+
+static MemTxResult cipher_write(void *opaque, hwaddr offset, uint64_t value,
+                                unsigned size, MemTxAttrs attrs)
+{
+    Wave723ModemIO *io = opaque;
+    if (value & 1) {
+        return MEMTX_ERROR; /* No cipher datapath yet. */
+    }
+    /* Interrupt clear is a strobe. Interrupt status is read-only. */
+    io->cipher_config = value & ~(0xeeeceeecu | 0x111u);
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps cipher_ops = {
+    .read = cipher_read, .write_with_attrs = cipher_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
 
 static void layer1_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
@@ -187,6 +220,12 @@ void wave723_modem_io_init(Wave723ModemIO *io, Object *owner,
                            MemoryRegion *system, Wave723Intc *intc)
 {
     io->intc = intc;
+    memory_region_init_io(&io->cipher, owner, &cipher_ops, io, "wave723.cipher-config", 4);
+    memory_region_add_subregion(system, 0x08150000, &io->cipher);
+    /* XXKG1 clears 0x320 bytes here in its cipher initialization routine. */
+    memory_region_init_ram_flags_nomigrate(&io->cipher_ram, owner, "wave723.cipher-work",
+                                           0x320, 0, &error_fatal);
+    memory_region_add_subregion(system, 0x2800fb00, &io->cipher_ram);
     io->match = timer_new_ns(QEMU_CLOCK_VIRTUAL, sleep_match, io);
     io->config = g_new0(Wave723ConfigBank, ARRAY_SIZE(config_ranges));
     for (unsigned i = 0; i < ARRAY_SIZE(config_ranges); ++i) {
@@ -217,6 +256,7 @@ void wave723_modem_io_reset(Wave723ModemIO *io)
     io->ticks = 0;
     io->reload = 0;
     io->control = 0;
+    io->cipher_config = 0;
     io->compare = 0;
     timer_del(io->match);
 }

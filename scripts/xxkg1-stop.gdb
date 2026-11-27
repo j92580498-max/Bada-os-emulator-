@@ -56,6 +56,17 @@ for va in (0x04ffffe8, task, int(ap['regs'][15])):
             print('APPS scheduled task:', name.decode('ascii', 'backslashreplace'))
     except ValueError:
         pass
+def apps_text(reg):
+    address = int(ap['regs'][reg])
+    if 0x81000000 <= address < 0x81e00000:
+        value = read_guest(address, 160).split(b'\0', 1)[0]
+        if value and all(32 <= b < 127 for b in value):
+            return value.decode('ascii')
+    return ''
+source = apps_text(4)
+message = apps_text(6)
+if source.endswith('.c') and message:
+    print('APPS diagnostic: %s:%d: %s' % (source, int(ap['regs'][5]), message))
 pg5, = struct.unpack('<I', read_guest(0x808b4334, 4))
 print('AMSS page 5 shared memory:', hex(pg5))
 if 0x80000000 <= pg5 < 0x8ffff000:
