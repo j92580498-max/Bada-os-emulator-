@@ -6,9 +6,6 @@ on:
       build_run:
         description: Successful Build and test run on main
         required: true
-      media_asset:
-        description: Release asset ID of the maintainer's encrypted XXKG1 test inputs
-        required: true
       instructions:
         description: Guest instruction budget
         default: '700000000'
@@ -46,16 +43,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends xvfb xauth xterm xdotool imagemagick fonts-dejavu-core
       - name: Stage the private test input
         env:
-          GH_TOKEN: ${{ github.token }}
-          MEDIA_ASSET: ${{ inputs.media_asset }}
+          MEDIA_URL: ${{ secrets.WAVE723_MEDIA_URL }}
           MEDIA_KEY: ${{ secrets.WAVE723_MEDIA_KEY }}
         run: |
           set -o pipefail
-          [[ $MEDIA_ASSET =~ ^[0-9]+$ && -n $MEDIA_KEY ]]
+          [[ $MEDIA_URL == https://release-assets.githubusercontent.com/* && -n $MEDIA_KEY ]]
           umask 077
           mkdir "$RUNNER_TEMP/stock"
-          gh api -H 'Accept: application/octet-stream' \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$MEDIA_ASSET" > "$RUNNER_TEMP/input.gpg"
+          curl --fail --silent --show-error --retry 2 --output "$RUNNER_TEMP/input.gpg" "$MEDIA_URL"
           gpg --batch --pinentry-mode loopback --passphrase-fd 3 3<<<"$MEDIA_KEY" \
             --decrypt "$RUNNER_TEMP/input.gpg" |
             tar -x -C "$RUNNER_TEMP/stock" --no-same-owner --no-same-permissions \
