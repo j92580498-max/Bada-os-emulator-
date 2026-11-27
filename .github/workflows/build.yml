@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_all_platforms:
+        description: Include the Windows and Android packages
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,22 +23,13 @@ concurrency:
 
 jobs:
   desktop:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.artifact == 'linux-arm64' && 'ubuntu-24.04-arm' || matrix.artifact == 'windows-x86_64' && 'windows-2022' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Linux x86-64
-            runner: ubuntu-24.04
-            artifact: linux-x86_64
-          - name: Linux ARM64
-            runner: ubuntu-24.04-arm
-            artifact: linux-arm64
-          - name: Windows x86-64
-            runner: windows-2022
-            artifact: windows-x86_64
+        artifact: ${{ fromJSON(inputs.build_all_platforms && '["linux-x86_64","linux-arm64","windows-x86_64"]' || '["linux-x86_64","linux-arm64"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -95,6 +91,7 @@ jobs:
           if-no-files-found: error
 
   qemu-android:
+    if: inputs.build_all_platforms
     name: Android QEMU (${{ matrix.abi }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45

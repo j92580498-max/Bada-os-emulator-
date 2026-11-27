@@ -2,7 +2,7 @@
 
 Experimental Samsung Wave 723 (GT-S7230/E, Broadcom BCM2156) emulation for
 Android, Windows, and Linux. The current milestone is firmware inspection and
-execution of the AMSS ARM reset vector in QEMU. It stops at the first unsupported memory
+execution of the AMSS and APPS ARM reset vectors in QEMU. It stops at the first unsupported memory
 access, CPU error, or instruction limit and reports the CPU state. Bada does
 not boot yet. Display, touchscreen, storage and bootloader emulation are pending.
 
@@ -19,6 +19,7 @@ Download a package from a successful [Build and test run](https://github.com/j92
 ```sh
 ./wave723 inspect /path/to/S7230EXXKG1_OXGKG2.zip
 ./wave723 trace /path/to/S7230EXXKG1_OXGKG2.zip 100000
+./wave723 trace-apps /path/to/S7230EXXKG1_OXGKG2.zip 100000
 ```
 
 Use your own firmware archive. Firmware is opened read-only. On Android the
@@ -51,8 +52,9 @@ cd android
 ./gradlew :app:assembleDebug
 ```
 
-GitHub Actions builds and tests the packages using synthetic ARM and Thumb
-test images. This project is distributed under GPL-2.0 and uses
+GitHub Actions builds and tests the Linux packages using synthetic ARM and
+Thumb images. Dispatch the workflow with **Include the Windows and Android
+packages** enabled to build those platforms. This project is distributed under GPL-2.0 and uses
 [QEMU from LightTouch's Android-capable fork](https://github.com/blake-lucas/qemu-ios/commit/1955aea6930119c34b968c0596dc3cd72d67e839),
 [miniz](https://github.com/richgel999/miniz/commit/293d4db1b7d0ffee9756d035b9ac6f7431ef8492),
 and [SDL](https://github.com/libsdl-org/SDL/commit/badbf8da4ee72b3ef599c721ffc9899e8d7c8d90).

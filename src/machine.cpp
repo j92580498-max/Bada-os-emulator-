@@ -154,27 +154,29 @@ bool run(const fs::path& engine, const std::vector<fs::path>& args, const fs::pa
 
 }  // namespace
 
-std::string runAmss(const std::vector<std::uint8_t>& image, std::uint32_t handler,
-                    std::uint32_t instructionLimit, const fs::path& qemu,
-                    const fs::path& temporaryDirectory) {
+std::string runReset(ResetTarget target, const std::vector<std::uint8_t>& image,
+                     std::uint32_t handler, std::uint32_t instructionLimit,
+                     const fs::path& qemu, const fs::path& temporaryDirectory) {
     const auto engine = fs::absolute(enginePath(qemu));
     if (!fs::is_regular_file(engine)) {
         throw std::runtime_error("The Wave 723 QEMU executable is missing.");
     }
     const Workspace workspace(temporaryDirectory);
-    const auto amss = workspace.path / "amss.bin";
+    const auto raw = workspace.path / "reset.bin";
     {
-        std::ofstream file(amss, std::ios::binary);
+        std::ofstream file(raw, std::ios::binary);
         file.write(reinterpret_cast<const char*>(image.data()), image.size());
         file.close();
-        if (!file) throw std::runtime_error("Could not stage AMSS for QEMU.");
+        if (!file) throw std::runtime_error("Could not stage the reset image for QEMU.");
     }
+    const bool apps = target == ResetTarget::Apps;
+    const auto guestOptions = (apps ? "apps:" : "amss:") + std::to_string(instructionLimit);
     const auto log = workspace.path / "qemu.log";
     const bool ok = run(engine, {
         "-M", "wave723", "-m", "32M", "-accel", "tcg,thread=single,one-insn-per-tb=on",
         "-icount", "shift=0,sleep=off", "-nodefaults", "-display", "none",
         "-monitor", "none", "-serial", "none", "-no-reboot",
-        "-kernel", amss, "-append", std::to_string(instructionLimit)
+        "-kernel", raw, "-append", guestOptions
     }, log);
     std::ifstream file(log);
     std::string report(8192, '\0');
@@ -185,9 +187,12 @@ std::string runAmss(const std::vector<std::uint8_t>& image, std::uint32_t handle
                                                 : report);
     }
     std::ostringstream description;
-    description << "AMSS reset trace (QEMU ARM1176)\nVector 0x" << std::hex << amssBase
+    description << (apps ? "APPS" : "AMSS") << " reset trace (QEMU ARM1176)\nVector 0x"
+                << std::hex << (apps ? appsBase : amssBase)
                 << " -> 0x" << handler << std::dec << "\nInstruction limit: "
-                << instructionLimit << '\n' << report;
+                << instructionLimit << '\n';
+    if (apps) description << "Decrypted APPS bytes staged: " << image.size() << '\n';
+    description << report;
     return description.str();
 }
 

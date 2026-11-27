@@ -1,6 +1,7 @@
 #include "wave723/firmware.hpp"
 
 #include "machine.hpp"
+#include "seed.hpp"
 
 #include <miniz.h>
 
@@ -8,6 +9,7 @@
 #include <array>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -21,6 +23,13 @@ constexpr std::uint32_t armResetLoad = 0xe59ff024;
 constexpr std::uint32_t amssTag = 0xbabeface;
 constexpr std::size_t resetLiteral = 0x2c;
 constexpr std::size_t probeHeaderSize = 64;
+constexpr std::uint32_t appsResetLoad = 0xe59ff468;
+constexpr std::size_t appsResetLiteral = 0x470;
+constexpr std::size_t flashFooterSize = 1024;
+constexpr std::size_t appsPrefixSize = 256 * 1024;
+constexpr std::uint64_t maxAppsSize = 128 * 1024 * 1024;
+constexpr std::uint32_t footerMagic = 0xabcdabcd;
+constexpr std::uint32_t seedMagic = 0x79461379;
 
 std::uint32_t word(const std::uint8_t* bytes) {
     return std::uint32_t(bytes[0]) | (std::uint32_t(bytes[1]) << 8) |
@@ -117,6 +126,51 @@ public:
         return bytes;
     }
 
+    std::vector<std::uint8_t> appsResetImage(const mz_zip_archive_file_stat& info) {
+        if (info.m_uncomp_size < flashFooterSize + appsResetLiteral + 4 ||
+            info.m_uncomp_size > maxAppsSize) {
+            throw std::runtime_error("The APPS image size is outside the supported range.");
+        }
+        const auto payloadSize = static_cast<std::size_t>(info.m_uncomp_size) - flashFooterSize;
+        if (payloadSize % 16 != 0) {
+            throw std::runtime_error("The APPS payload must contain complete SEED blocks.");
+        }
+        using ZipReader = std::unique_ptr<mz_zip_reader_extract_iter_state,
+                                          decltype(&mz_zip_reader_extract_iter_free)>;
+        ZipReader iter(mz_zip_reader_extract_iter_new(&zip_, info.m_file_index, 0),
+                       mz_zip_reader_extract_iter_free);
+        if (!iter) fail("Could not open apps_compressed.bin");
+        const auto read = [&](std::uint8_t* data, std::size_t size) {
+            if (mz_zip_reader_extract_iter_read(iter.get(), data, size) != size) {
+                fail("Could not decompress apps_compressed.bin");
+            }
+        };
+        std::vector<std::uint8_t> prefix(std::min(payloadSize, appsPrefixSize));
+        read(prefix.data(), prefix.size());
+        std::array<std::uint8_t, 32768> skip{};
+        for (auto remaining = payloadSize - prefix.size(); remaining > 0;) {
+            const auto chunk = std::min(remaining, skip.size());
+            read(skip.data(), chunk);
+            remaining -= chunk;
+        }
+        std::array<std::uint8_t, flashFooterSize> footer{};
+        read(footer.data(), footer.size());
+        if (!mz_zip_reader_extract_iter_free(iter.release())) {
+            fail("Could not verify the APPS ZIP member");
+        }
+        if (word(footer.data()) != footerMagic || word(footer.data() + 0x48) != seedMagic ||
+            word(footer.data() + 0x190) != seedMagic ||
+            word(footer.data() + 0x194) != payloadSize) {
+            throw std::runtime_error("Unsupported APPS footer. Expected the XXKG1 SEED layout.");
+        }
+        std::array<std::uint32_t, 32> keys{};
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            keys[i] = word(footer.data() + 0x110 + 4 * i);
+        }
+        decryptSamsungSeed(prefix.data(), prefix.size() / 16, keys);
+        return prefix;
+    }
+
 private:
     [[noreturn]] void fail(const char* operation) {
         throw std::runtime_error(std::string(operation) + ": " +
@@ -149,6 +203,48 @@ void writeName(std::ostream& out, std::string_view name) {
     }
 }
 
+std::string traceImage(const std::filesystem::path& path, ResetTarget target,
+                       std::uint32_t instructionLimit, const std::filesystem::path& qemu) {
+    if (instructionLimit == 0 || instructionLimit > maxInstructionLimit) {
+        throw std::runtime_error("Instruction limit must be between 1 and 2000000.");
+    }
+    const bool apps = target == ResetTarget::Apps;
+    const std::string_view part = apps ? "APPS" : "AMSS";
+    const std::string filename = apps ? "apps_compressed.bin" : "amss.bin";
+    Archive archive(path);
+    std::vector<mz_uint> candidates;
+    for (mz_uint index = 0; index < archive.count(); ++index) {
+        const auto entry = archive.stat(index);
+        if (!entry.m_is_directory && role(entry.m_filename) == part) {
+            candidates.push_back(index);
+        }
+    }
+    if (candidates.empty()) throw std::runtime_error("The ZIP does not contain " + filename + ".");
+    if (candidates.size() != 1) {
+        throw std::runtime_error("The ZIP contains multiple " + filename + " files.");
+    }
+
+    const auto entry = archive.stat(candidates.front());
+    const auto bytes = apps ? archive.appsResetImage(entry) : archive.image(entry);
+    if (apps && (word(bytes.data()) != appsResetLoad || word(bytes.data() + 4) != appsResetLoad)) {
+        throw std::runtime_error("Unsupported APPS reset header. Expected the XXKG1 vector layout.");
+    }
+    if (!apps && (word(bytes.data()) != armResetLoad || word(bytes.data() + 0x20) != amssTag)) {
+        throw std::runtime_error("Unsupported AMSS reset header. Expected the XXKG1 vector layout.");
+    }
+    const auto handler = word(bytes.data() + (apps ? appsResetLiteral : resetLiteral));
+    const auto base = apps ? appsBase : amssBase;
+    if ((handler & 3) || handler < base || handler - base >= bytes.size() - 3) {
+        throw std::runtime_error(std::string(part) + " reset handler points outside the staged image.");
+    }
+#ifdef __ANDROID__
+    const auto temporaryDirectory = path.parent_path();
+#else
+    const auto temporaryDirectory = std::filesystem::temp_directory_path();
+#endif
+    return runReset(target, bytes, handler, instructionLimit, qemu, temporaryDirectory);
+}
+
 }  // namespace
 
 std::string inspectFirmware(const std::filesystem::path& path) {
@@ -177,34 +273,12 @@ std::string inspectFirmware(const std::filesystem::path& path) {
 
 std::string traceReset(const std::filesystem::path& path, std::uint32_t instructionLimit,
                        const std::filesystem::path& qemu) {
-    if (instructionLimit == 0 || instructionLimit > maxInstructionLimit) {
-        throw std::runtime_error("Instruction limit must be between 1 and 2000000.");
-    }
-    Archive archive(path);
-    std::vector<mz_uint> candidates;
-    for (mz_uint index = 0; index < archive.count(); ++index) {
-        const auto entry = archive.stat(index);
-        if (!entry.m_is_directory && role(entry.m_filename) == "AMSS") {
-            candidates.push_back(index);
-        }
-    }
-    if (candidates.empty()) throw std::runtime_error("The ZIP does not contain amss.bin.");
-    if (candidates.size() != 1) throw std::runtime_error("The ZIP contains multiple amss.bin files.");
+    return traceImage(path, ResetTarget::Amss, instructionLimit, qemu);
+}
 
-    const auto bytes = archive.image(archive.stat(candidates.front()));
-    if (word(bytes.data()) != armResetLoad || word(bytes.data() + 0x20) != amssTag) {
-        throw std::runtime_error("Unsupported AMSS reset header. Expected the XXKG1 vector layout.");
-    }
-    const auto handler = word(bytes.data() + resetLiteral);
-    if ((handler & 3) || handler < amssBase || handler - amssBase >= bytes.size() - 3) {
-        throw std::runtime_error("The AMSS reset handler points outside the loaded image.");
-    }
-#ifdef __ANDROID__
-    const auto temporaryDirectory = path.parent_path();
-#else
-    const auto temporaryDirectory = std::filesystem::temp_directory_path();
-#endif
-    return runAmss(bytes, handler, instructionLimit, qemu, temporaryDirectory);
+std::string traceAppsReset(const std::filesystem::path& path, std::uint32_t instructionLimit,
+                           const std::filesystem::path& qemu) {
+    return traceImage(path, ResetTarget::Apps, instructionLimit, qemu);
 }
 
 }  // namespace wave723

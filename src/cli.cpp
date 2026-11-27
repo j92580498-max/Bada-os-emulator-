@@ -17,7 +17,8 @@ static int run(int argc, const Arg::value_type* const* argv) {
     using namespace wave723;
     if (argc == 2 && Arg(argv[1]) == NATIVE("--help")) {
         std::cout << "Usage: wave723 inspect FIRMWARE.zip\n"
-                     "       wave723 trace FIRMWARE.zip [INSTRUCTION_LIMIT]\n";
+                     "       wave723 trace FIRMWARE.zip [INSTRUCTION_LIMIT]\n"
+                     "       wave723 trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT]\n";
         return 0;
     }
     try {
@@ -25,7 +26,9 @@ static int run(int argc, const Arg::value_type* const* argv) {
             std::cout << inspectFirmware(std::filesystem::path(argv[2]));
             return 0;
         }
-        if ((argc == 3 || argc == 4) && Arg(argv[1]) == NATIVE("trace")) {
+        const Arg action = argc > 1 ? Arg(argv[1]) : Arg{};
+        if ((argc == 3 || argc == 4) &&
+            (action == NATIVE("trace") || action == NATIVE("trace-apps"))) {
             auto limit = defaultInstructionLimit;
             if (argc == 4) {
                 const auto text = std::filesystem::path(argv[3]).u8string();
@@ -35,10 +38,12 @@ static int run(int argc, const Arg::value_type* const* argv) {
                     throw std::runtime_error("Invalid instruction limit.");
                 }
             }
-            std::cout << traceReset(std::filesystem::path(argv[2]), limit);
+            const auto path = std::filesystem::path(argv[2]);
+            std::cout << (action == NATIVE("trace-apps") ? traceAppsReset(path, limit)
+                                                        : traceReset(path, limit));
             return 0;
         }
-        std::cerr << "Usage: wave723 inspect FIRMWARE.zip | trace FIRMWARE.zip [INSTRUCTION_LIMIT]\n";
+        std::cerr << "Usage: wave723 inspect|trace|trace-apps FIRMWARE.zip [INSTRUCTION_LIMIT]\n";
         return 2;
     } catch (const std::exception& error) {
         std::cerr << "wave723: " << error.what() << '\n';

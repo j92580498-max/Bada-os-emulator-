@@ -13,5 +13,8 @@ std::string inspectFirmware(const std::filesystem::path& path);
 std::string traceReset(const std::filesystem::path& path,
                        std::uint32_t instructionLimit = defaultInstructionLimit,
                        const std::filesystem::path& qemu = {});
+std::string traceAppsReset(const std::filesystem::path& path,
+                           std::uint32_t instructionLimit = defaultInstructionLimit,
+                           const std::filesystem::path& qemu = {});
 
 }  // namespace wave723

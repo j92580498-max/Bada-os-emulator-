@@ -25,11 +25,11 @@ The related BCM21553 places its system configuration block at `0x08880000`,
 but the function of register `0x48` on BCM2156 is unverified.
 
 The last 1,024 bytes of `apps_compressed.bin` contain a Samsung flash footer
-with SEED markers and the version `S723E+XX+KG1`. An offline check of the
-decoded prefix found an ARM reset literal at offset `0x470` targeting
-`0x81000674`. This points to an APPS startup image linked at `0x81000000`.
-The emulator currently loads AMSS. APPS decoding and startup integration
-remain pending.
+with SEED markers and the version `S723E+XX+KG1`. `trace-apps` verifies the
+ZIP member, decrypts its first 256 KiB and maps the prefix at
+`0x81000000`. Its reset literal at offset `0x470` targets `0x81000674`.
+Mapping the remaining APPS payload and booting bada require further board
+emulation.
 
 ## Source research
 

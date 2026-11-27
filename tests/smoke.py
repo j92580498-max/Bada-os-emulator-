@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 CLI = Path(sys.argv.pop(1)).resolve()
+APPS_CIPHER = Path(__file__).parent / "fixtures" / "apps-reset.hex"
 
 
 def amss_image(thumb=False):
@@ -24,6 +25,22 @@ def amss_image(thumb=False):
         struct.pack_into("<5I", data, 0x40,
                          0xE3A0002A, 0xE59F1004, 0xE5912000, 0xEAFFFFFE, 0x08810000)
     return data
+
+
+def apps_image():
+    # Synthetic reset stub at 0x81000480. The encrypted blocks use zero
+    # initial round keys and Samsung's ciphertext chaining.
+    encrypted = bytes.fromhex(APPS_CIPHER.read_text(encoding="ascii"))
+    footer = bytearray(1024)
+    for offset, word in {
+        0x00: 0xABCDABCD,
+        0x04: 0x00A00000,
+        0x48: 0x79461379,
+        0x190: 0x79461379,
+        0x194: len(encrypted),
+    }.items():
+        struct.pack_into("<I", footer, offset, word)
+    return encrypted + footer
 
 
 class Smoke(unittest.TestCase):
@@ -62,11 +79,24 @@ class Smoke(unittest.TestCase):
         self.assertIn("Stop: instruction limit", report)
         self.assertIn("r0=0x0000002a", report)
 
+    def test_apps_decrypts_and_executes(self):
+        self.write({"images/APPS_COMPRESSED.BIN": apps_image()})
+        report = self.execute("trace-apps")
+        self.assertIn("APPS reset trace (QEMU ARM1176)", report)
+        self.assertIn("Vector 0x81000000 -> 0x81000480", report)
+        self.assertIn("unmapped write at 0x08880048 (4 bytes)", report)
+        self.assertIn("Write value 0x0000002b", report)
+
     def test_unsupported_inputs(self):
         self.path.write_bytes(b"not a zip")
         self.assertIn("Could not read the firmware ZIP", self.execute("inspect", status=1))
         self.write({"apps_compressed.bin": b"unused"})
         self.assertIn("does not contain amss.bin", self.execute("trace", status=1))
+        self.assertIn("APPS image size", self.execute("trace-apps", status=1))
+        invalid = bytearray(apps_image())
+        invalid[-1024] = 0
+        self.write({"apps_compressed.bin": invalid})
+        self.assertIn("Unsupported APPS footer", self.execute("trace-apps", status=1))
         self.write({"amss.bin": bytes(256)})
         self.assertIn("Unsupported AMSS reset header", self.execute("trace", status=1))
         self.write({"amss.bin": amss_image(), "copy/amss.bin": amss_image()})

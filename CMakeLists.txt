@@ -19,7 +19,7 @@ FetchContent_Declare(miniz
     URL https://codeload.github.com/richgel999/miniz/tar.gz/293d4db1b7d0ffee9756d035b9ac6f7431ef8492)
 FetchContent_MakeAvailable(miniz)
 
-add_library(wave723_core STATIC src/firmware.cpp src/machine.cpp)
+add_library(wave723_core STATIC src/firmware.cpp src/machine.cpp src/seed.cpp)
 target_include_directories(wave723_core PUBLIC include)
 target_link_libraries(wave723_core PRIVATE miniz)
 if(MSVC)
