@@ -31,5 +31,15 @@ capture() {
     return "$(cat "$record.status")"
 }
 
+if [[ ${4:-} == survey ]]; then
+    status=0
+    capture 05-peripheral-survey bash -c '
+        set -o pipefail
+        "$@" 2>&1 | tee "$RUNNER_TEMP/survey-full.log" |
+            grep -E "^(APPS (scheduled task|diagnostic|scheduler|PC)|AMSS (__xassert|shared table|external abort)|DSP:|LCD:|Stop:|Guest soft reset)"
+    ' bash "$cli" boot "$firmware" "$RUNNER_TEMP/survey.png" "$budget" || status=$?
+    cat "$RUNNER_TEMP/survey-full.log"
+    exit "$status"
+fi
 capture 01-firmware-inventory "$cli" inspect "$firmware"
 capture 02-stock-boot-trace "$cli" boot "$firmware" stock-images/03-guest-lcd.png "$budget"
